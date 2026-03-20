@@ -1,0 +1,11 @@
+{
+  "name": "ariba-legacy-runner",
+  "private": true,
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "concurrently -k -n BACKEND,FRONTEND -c cyan,green \"powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev-backend.ps1\" \"powershell -NoProfile -ExecutionPolicy Bypass -File ./scripts/dev-frontend.ps1\""
+  },
+  "devDependencies": {
+    "concurrently": "^9.1.2"
+  }
+}

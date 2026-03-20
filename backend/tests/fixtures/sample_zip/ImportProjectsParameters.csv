@@ -1,0 +1,2 @@
+WorkspaceLookupKey,TemplateName,AttributesFileLocation,DocumentsFileLocation,TeamsFileLocation,ContractContentDocumentsFileLocation,RootParentId,TopFolderName,FolderFieldName,FolderFieldPattern,FolderFormat
+ContractId,Contrato - Legado,Contracts.csv,ContractDocuments.csv,ContractTeams.csv,ContractContentDocuments.csv,,,ContractId,([1-9][0-9]*),{0} to {1}
