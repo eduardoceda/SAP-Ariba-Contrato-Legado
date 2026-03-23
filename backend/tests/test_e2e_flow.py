@@ -6,8 +6,11 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi.testclient import TestClient
+from openpyxl import load_workbook
 
+from app.models import ExecutiveSummary, ValidationIssue, ValidationReport, ValidationSummary
 from app.main import app
+from app.services.exporter import build_report_xlsx
 import app.services.run_history as run_history
 
 SAMPLE_DIR = Path(__file__).resolve().parent / "fixtures" / "sample_zip"
@@ -118,3 +121,61 @@ def test_e2e_critical_flow(tmp_path, monkeypatch) -> None:
     assert current_run["artifacts"]["package_zip"] is True
     assert current_run["artifacts"]["package_with_attachments_zip"] is True
     assert current_run["artifacts"]["report_xlsx"] is True
+
+
+def test_report_xlsx_includes_issue_guidance() -> None:
+    report = ValidationReport(
+        summary=ValidationSummary(errors=1, warnings=1, infos=0, total_issues=2, is_valid=False),
+        issues=[
+            ValidationIssue(
+                severity="error",
+                code="REQUIRED_FIELD",
+                message="Campo obrigatório vazio: Owner",
+                source_file="Contracts.csv",
+                row=2,
+                field="Owner",
+                contract_id="LCW4700001278",
+            ),
+            ValidationIssue(
+                severity="warning",
+                code="UNEXPECTED_FILE_PATH",
+                message="Arquivo deveria estar na pasta Documentos contratos/.",
+                source_file="ContractDocuments.csv",
+                row=3,
+                field="File",
+                contract_id="LCW4700001278",
+            ),
+        ],
+        record_counts={"contracts": 1, "contract_documents": 1},
+    )
+    executive_summary = ExecutiveSummary(
+        total_contracts=1,
+        contracts_ready_for_import=0,
+        contracts_with_errors=1,
+        contracts_with_warnings=1,
+        contracts_with_infos=0,
+        mapped_contract_documents=1,
+        mapped_clid_documents=0,
+        team_assignments=0,
+        readiness_percent=0.0,
+        recommendation="Ajustar dados obrigatórios antes da carga.",
+    )
+
+    workbook = load_workbook(BytesIO(build_report_xlsx(report, executive_summary)))
+    assert "Inconsistencias" in workbook.sheetnames
+
+    issues_sheet = workbook["Inconsistencias"]
+    headers = [issues_sheet.cell(row=1, column=index).value for index in range(1, 9)]
+    assert headers == [
+        "Severidade",
+        "Codigo",
+        "Mensagem",
+        "Como corrigir",
+        "Arquivo",
+        "Linha",
+        "Campo",
+        "Contrato",
+    ]
+    assert issues_sheet["D2"].value == "Preencha o campo obrigatório na linha indicada."
+    assert issues_sheet.freeze_panes == "A2"
+    assert issues_sheet.auto_filter.ref is not None

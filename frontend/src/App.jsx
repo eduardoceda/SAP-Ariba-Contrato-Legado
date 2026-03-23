@@ -229,6 +229,21 @@ function toCsvList(items) {
   return Array.isArray(items) ? items.join(", ") : "";
 }
 
+function uniqueNonEmptyValues(values) {
+  return Array.from(
+    new Set(
+      (values || [])
+        .map((value) => String(value || "").trim())
+        .filter(Boolean)
+    )
+  );
+}
+
+function pickSingleCandidate(values) {
+  const candidates = uniqueNonEmptyValues(values);
+  return candidates.length === 1 ? candidates[0] : "";
+}
+
 function downloadBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
   const anchor = document.createElement("a");
@@ -634,10 +649,45 @@ function buildIssueAutoFixDataset(sourceDataset, issue, allIssues = []) {
   const fieldName = String(issue?.field || "").trim();
 
   const resolveContractOwner = (contractId) => {
+    const normalizedContractId = String(contractId || "").trim();
+    if (!normalizedContractId) {
+      return "";
+    }
+
     const found = (dataset.contracts || []).find(
-      (row) => String(row.ContractId || "").trim() === String(contractId || "").trim()
+      (row) => String(row.ContractId || "").trim() === normalizedContractId
     );
-    return String(found?.Owner || "").trim();
+    const contractOwner = String(found?.Owner || "").trim();
+    if (contractOwner) {
+      return contractOwner;
+    }
+
+    return pickSingleCandidate([
+      ...(dataset.contract_teams || [])
+        .filter((row) => String(row.Workspace || "").trim() === normalizedContractId)
+        .map((row) => row.Member),
+      ...(dataset.contract_documents || [])
+        .filter((row) => String(row.ContractId || "").trim() === normalizedContractId)
+        .map((row) => row.Owner),
+    ]);
+  };
+
+  const resolveTeamMember = (contractId) => {
+    const normalizedContractId = String(contractId || "").trim();
+    if (!normalizedContractId) {
+      return "";
+    }
+
+    const ownerCandidate = resolveContractOwner(normalizedContractId);
+    if (ownerCandidate) {
+      return ownerCandidate;
+    }
+
+    return pickSingleCandidate(
+      (dataset.contract_documents || [])
+        .filter((row) => String(row.ContractId || "").trim() === normalizedContractId)
+        .map((row) => row.Owner)
+    );
   };
 
   if (issue?.code === "REQUIRED_FIELD") {
@@ -661,6 +711,13 @@ function buildIssueAutoFixDataset(sourceDataset, issue, allIssues = []) {
         if (fieldName === "ContractStatus" && !row.ContractStatus) {
           row.ContractStatus = "Published";
           changes.push("ContractStatus preenchido com Published.");
+        }
+        if (fieldName === "Owner" && !row.Owner) {
+          const ownerCandidate = resolveContractOwner(row.ContractId || targetContract);
+          if (ownerCandidate) {
+            row.Owner = ownerCandidate;
+            changes.push(`Owner preenchido automaticamente para ${row.ContractId || targetContract}.`);
+          }
         }
       }
     } else if (sourceKey === "contract_documents") {
@@ -717,6 +774,13 @@ function buildIssueAutoFixDataset(sourceDataset, issue, allIssues = []) {
         if (fieldName === "ProjectGroup" && !row.ProjectGroup) {
           row.ProjectGroup = "Comprador";
           changes.push("ProjectGroup preenchido com Comprador.");
+        }
+        if (fieldName === "Member" && !row.Member) {
+          const memberCandidate = resolveTeamMember(row.Workspace || targetContract);
+          if (memberCandidate) {
+            row.Member = memberCandidate;
+            changes.push(`Member preenchido automaticamente para ${row.Workspace || targetContract}.`);
+          }
         }
       }
     } else if (sourceKey === "import_projects_parameters" && fieldName) {
@@ -992,6 +1056,58 @@ function buildIssueAutoFixDataset(sourceDataset, issue, allIssues = []) {
         }
       }
     }
+  }
+
+  return { dataset, changes: Array.from(new Set(changes)) };
+}
+
+function getIssueAutoFixPriority(issue) {
+  if (issue?.code === "INVALID_ID_FORMAT") {
+    return 0;
+  }
+  if (issue?.code === "REQUIRED_FIELD" && issue?.source_file === "Contracts.csv") {
+    return 1;
+  }
+  if (issue?.code === "REQUIRED_FIELD" && issue?.source_file === "ContractDocuments.csv") {
+    return 2;
+  }
+  if (issue?.code === "REQUIRED_FIELD" && issue?.source_file === "ContractTeams.csv") {
+    return 3;
+  }
+  if (issue?.code === "REQUIRED_FIELD") {
+    return 4;
+  }
+  if (issue?.code === "UNEXPECTED_FILE_PATH" || issue?.code === "INVALID_PARTY_FORMAT") {
+    return 5;
+  }
+  if (
+    issue?.code === "DUPLICATE_DOCUMENT" ||
+    issue?.code === "DUPLICATE_CONTENT_DOCUMENT" ||
+    issue?.code === "DUPLICATE_TEAM_MEMBER"
+  ) {
+    return 6;
+  }
+  if (issue?.code === "IMPORT_PARAMS_ROW_COUNT") {
+    return 7;
+  }
+  if (issue?.code === "DUPLICATE_ATTACHMENT_FILENAME" || issue?.code === "UNREFERENCED_ATTACHMENT") {
+    return 8;
+  }
+  return 99;
+}
+
+function buildBatchAutoFixDataset(sourceDataset, allIssues = []) {
+  let { dataset, changes } = buildSafeAutoFixDataset(sourceDataset);
+
+  const fixableIssues = (allIssues || [])
+    .filter((issue) => AUTO_FIXABLE_CODES.has(issue.code))
+    .slice()
+    .sort((left, right) => getIssueAutoFixPriority(left) - getIssueAutoFixPriority(right));
+
+  for (const issue of fixableIssues) {
+    const issueFix = buildIssueAutoFixDataset(dataset, issue, allIssues);
+    dataset = issueFix.dataset;
+    changes = [...changes, ...(issueFix.changes || [])];
   }
 
   return { dataset, changes: Array.from(new Set(changes)) };
@@ -1820,6 +1936,51 @@ export default function App() {
     }, source, sourceZipFile);
   }
 
+  async function executePreparedFixPlan(plan) {
+    if (!plan?.dataset || !analysis?.dataset) {
+      setError("Execute a pré-análise antes de aplicar correções automáticas.");
+      return;
+    }
+
+    if (datasetsAreEqual(plan.dataset, analysis.dataset)) {
+      setPendingFixPlan(null);
+      setError("");
+      setSuccessMessage("Nenhuma correção automática segura foi necessária.");
+      setReviewTab("issues");
+      scrollToStep("review");
+      return;
+    }
+
+    const snapshot = {
+      analysis,
+      analysisSource,
+      sourceZipForExport,
+      attachmentValidation,
+      previewFileKey,
+    };
+    const result = await runAnalyzeJson(plan.dataset);
+    if (!result) {
+      return;
+    }
+
+    setLastAppliedSnapshot(snapshot);
+    setPendingFixPlan(null);
+
+    const attachmentsSource =
+      snapshot.analysisSource === "zip"
+        ? snapshot.sourceZipForExport
+        : attachmentsZipFile || snapshot.sourceZipForExport;
+    if (attachmentsSource) {
+      await validateAttachmentsAgainstDataset(result.dataset, attachmentsSource);
+    }
+
+    const changeCount = plan.changes?.length || 1;
+    setError("");
+    setSuccessMessage(`${plan.label}: ${changeCount} ajuste(s) aplicado(s).`);
+    setReviewTab("issues");
+    scrollToStep("review");
+  }
+
   function queueFixPlan({ label, dataset: nextDataset, changes }) {
     if (!analysis?.dataset) {
       setError("Execute a pré-análise antes de preparar correções.");
@@ -1845,28 +2006,7 @@ export default function App() {
     if (!pendingFixPlan?.dataset || !analysis?.dataset) {
       return;
     }
-    const snapshot = {
-      analysis,
-      analysisSource,
-      sourceZipForExport,
-      attachmentValidation,
-      previewFileKey,
-    };
-    const result = await runAnalyzeJson(pendingFixPlan.dataset);
-    if (!result) {
-      return;
-    }
-    setLastAppliedSnapshot(snapshot);
-    setPendingFixPlan(null);
-
-    const attachmentsSource = analysisSource === "zip" ? sourceZipForExport : attachmentsZipFile;
-    if (attachmentsSource) {
-      await validateAttachmentsAgainstDataset(result.dataset, attachmentsSource);
-    }
-
-    const changeCount = pendingFixPlan.changes?.length || 1;
-    setSuccessMessage(`Correções aplicadas com sucesso: ${changeCount} ajuste(s).`);
-    scrollToStep("review");
+    await executePreparedFixPlan(pendingFixPlan);
   }
 
   function cancelPendingFixPlan() {
@@ -1891,7 +2031,7 @@ export default function App() {
     scrollToStep("review");
   }
 
-  function applySafeAutoFixes(issue = null) {
+  async function applySafeAutoFixes(issue = null) {
     if (!analysis?.dataset) {
       setError("Execute a pré-análise antes de aplicar correções automáticas.");
       return;
@@ -1899,7 +2039,7 @@ export default function App() {
 
     if (issue) {
       const issueFix = buildIssueAutoFixDataset(analysis.dataset, issue, issues);
-      queueFixPlan({
+      await executePreparedFixPlan({
         label: `Correção automática para ${issue.code}`,
         dataset: issueFix.dataset,
         changes: issueFix.changes,
@@ -1907,20 +2047,20 @@ export default function App() {
       return;
     }
 
-    const batchFix = buildSafeAutoFixDataset(analysis.dataset);
-    queueFixPlan({
-      label: "Correções automáticas seguras (lote)",
+    const batchFix = buildBatchAutoFixDataset(analysis.dataset, issues);
+    await executePreparedFixPlan({
+      label: "Correções automáticas seguras",
       dataset: batchFix.dataset,
       changes: batchFix.changes,
     });
   }
 
-  function applyAttachmentSuggestion(suggestion) {
+  async function applyAttachmentSuggestion(suggestion) {
     if (!suggestion?.dataset) {
       return;
     }
-    queueFixPlan({
-      label: `Sugestão de anexo: ${suggestion.issue?.code || "ajuste"}`,
+    await executePreparedFixPlan({
+      label: `Sugestão de anexo ${suggestion.issue?.code || "ajuste"}`,
       dataset: suggestion.dataset,
       changes: suggestion.changes,
     });
@@ -2718,6 +2858,9 @@ export default function App() {
               <div className="inlineActions">
                 <button className="secondary" type="button" onClick={() => applySafeAutoFixes()} disabled={loading}>
                   Aplicar correções automáticas (seguras)
+                </button>
+                <button className="secondary" type="button" onClick={exportReportXlsx} disabled={loading}>
+                  Baixar relatório Excel
                 </button>
                 {lastAppliedSnapshot && (
                   <button className="secondary" type="button" onClick={undoLastFixPlan} disabled={loading}>
