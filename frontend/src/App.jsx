@@ -197,25 +197,37 @@ const AUTO_FIXABLE_CODES = new Set([
 
 const SESSION_STORAGE_KEY = "ariba_legacy_session_v2";
 
+const MANUAL_ROW_DEFAULTS = Object.freeze({
+  ContractId: "",
+  Title: "",
+  Owner: "",
+  BaseLanguage: "BrazilianPortuguese",
+  HierarchicalType: "MasterAgreement",
+  ParentAgreement: "",
+  AgreementDate: "",
+  EffectiveDate: "",
+  ExpirationDate: "",
+  ContractStatus: "Published",
+  TeamProjectGroup: "Comprador",
+  TeamMember: "",
+  DocumentFile: "",
+  DocumentTitle: "",
+  ClidFile: "",
+  ClidTitle: "",
+});
+
 function createManualRow() {
-  return {
-    ContractId: "",
-    Title: "",
-    Owner: "",
-    BaseLanguage: "BrazilianPortuguese",
-    HierarchicalType: "MasterAgreement",
-    ParentAgreement: "",
-    AgreementDate: "",
-    EffectiveDate: "",
-    ExpirationDate: "",
-    ContractStatus: "Published",
-    TeamProjectGroup: "Comprador",
-    TeamMember: "",
-    DocumentFile: "",
-    DocumentTitle: "",
-    ClidFile: "",
-    ClidTitle: "",
-  };
+  return { ...MANUAL_ROW_DEFAULTS };
+}
+
+function hasManualRowInput(row) {
+  return Object.entries(MANUAL_ROW_DEFAULTS).some(
+    ([field, defaultValue]) => String(row?.[field] ?? "").trim() !== String(defaultValue ?? "").trim()
+  );
+}
+
+function isManualRowComplete(row) {
+  return MANUAL_COLUMNS.every((field) => String(row?.[field] ?? "").trim() !== "");
 }
 
 function parseCsvList(value) {
@@ -1172,9 +1184,16 @@ export default function App() {
   const [executionRuns, setExecutionRuns] = useState([]);
   const [runsLoading, setRunsLoading] = useState(false);
 
-  const manualRowsWithData = useMemo(
-    () =>
-      manualRows.filter((row) => Object.values(row).some((value) => String(value || "").trim() !== "")).length,
+  const manualRowsStarted = useMemo(
+    () => manualRows.filter((row) => hasManualRowInput(row)).length,
+    [manualRows]
+  );
+  const manualRowsCompleted = useMemo(
+    () => manualRows.filter((row) => hasManualRowInput(row) && isManualRowComplete(row)).length,
+    [manualRows]
+  );
+  const manualRowsIncomplete = useMemo(
+    () => manualRows.filter((row) => hasManualRowInput(row) && !isManualRowComplete(row)).length,
     [manualRows]
   );
 
@@ -1475,8 +1494,8 @@ export default function App() {
     if (wizardMode === "unified") {
       return Boolean(unifiedFile);
     }
-    return manualRowsWithData > 0;
-  }, [wizardMode, zipFile, unifiedFile, manualRowsWithData]);
+    return manualRowsCompleted > 0 && manualRowsIncomplete === 0;
+  }, [wizardMode, zipFile, unifiedFile, manualRowsCompleted, manualRowsIncomplete]);
 
   const attachmentsReady = wizardMode === "zip" ? true : Boolean(attachmentsZipFile);
   const analysisReady = Boolean(analysis);
@@ -1824,11 +1843,14 @@ export default function App() {
   }
 
   async function analyzeManualMode() {
-    const payloadRows = manualRows.filter((row) =>
-      Object.values(row).some((value) => String(value || "").trim() !== "")
-    );
-    if (payloadRows.length === 0) {
+    const startedRows = manualRows.filter((row) => hasManualRowInput(row));
+    if (startedRows.length === 0) {
       setError("Passo 1: preencha ao menos uma linha manual.");
+      return null;
+    }
+    const incompleteRows = startedRows.filter((row) => !isManualRowComplete(row));
+    if (incompleteRows.length > 0) {
+      setError("Passo 1: preencha todos os campos das linhas manuais antes de continuar.");
       return null;
     }
     return runRequest(async () => {
@@ -1836,7 +1858,7 @@ export default function App() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          rows: payloadRows,
+          rows: startedRows,
           validation_rules: validationRules,
           import_parameters_override: importParameters,
           profile_name: activeProfileName || null,
@@ -2080,6 +2102,20 @@ export default function App() {
     }
   }
 
+  async function downloadAttachmentsTemplate() {
+    setError("");
+    try {
+      const response = await fetch(`${API_PREFIX}/attachments/template`);
+      if (!response.ok) {
+        throw new Error(await parseError(response));
+      }
+      const blob = await response.blob();
+      downloadBlob(blob, "modelo-anexos-clid.zip");
+    } catch (requestError) {
+      setError(normalizeUiError(requestError.message));
+    }
+  }
+
   async function exportPackage() {
     if (!analysis?.dataset) {
       setError("Execute a pré-análise antes de exportar.");
@@ -2227,11 +2263,6 @@ export default function App() {
       <header className="hero">
         <div className="heroTop">
           <img src={stratesysLogo} alt="Stratesys" className="brandLogo" />
-          <div className="heroActions">
-            <button className="secondary" onClick={downloadTemplate} type="button">
-              Baixar template base única
-            </button>
-          </div>
         </div>
         <div>
           <h1>Assistente de Carga - Contratos Legados SAP Ariba</h1>
@@ -2333,6 +2364,11 @@ export default function App() {
               onChange={(event) => setUnifiedFile(event.target.files?.[0] || null)}
             />
             <p className="hint">O sistema converte automaticamente para os templates do Ariba.</p>
+            <div className="inlineActions">
+              <button className="secondary" onClick={downloadTemplate} type="button">
+                Baixar template base única
+              </button>
+            </div>
           </div>
         )}
 
@@ -2379,7 +2415,10 @@ export default function App() {
               <button className="secondary" onClick={addManualRow} type="button">
                 Adicionar linha
               </button>
-              <span className="hint">Linhas preenchidas: {manualRowsWithData}</span>
+              <span className="hint">Linhas completas: {manualRowsCompleted}</span>
+              {manualRowsStarted > 0 && manualRowsIncomplete > 0 && (
+                <span className="hint">Linhas incompletas: {manualRowsIncomplete}</span>
+              )}
             </div>
           </div>
         )}
@@ -2407,6 +2446,9 @@ export default function App() {
               <code>Documentos CLID/</code>.
             </p>
             <div className="inlineActions">
+              <button className="secondary" type="button" onClick={downloadAttachmentsTemplate}>
+                Baixar modelo das pastas
+              </button>
               <button
                 className="secondary"
                 type="button"

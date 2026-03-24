@@ -66,14 +66,6 @@ select {
   flex-wrap: wrap;
 }
 
-.heroActions {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
 .brandLogo {
   width: auto;
   height: 42px;
@@ -1055,11 +1047,6 @@ td input {
   }
 
   .progressStepButton {
-    width: 100%;
-    justify-content: flex-start;
-  }
-
-  .heroActions {
     width: 100%;
     justify-content: flex-start;
   }

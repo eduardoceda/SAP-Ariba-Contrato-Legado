@@ -473,6 +473,21 @@ def download_unified_template() -> StreamingResponse:
     )
 
 
+@app.get(f"{settings.api_prefix}/attachments/template")
+def download_attachments_template() -> StreamingResponse:
+    buffer = BytesIO()
+    with ZipFile(buffer, "w") as zip_file:
+        zip_file.writestr("Documentos contratos/", "")
+        zip_file.writestr("Documentos CLID/", "")
+
+    buffer.seek(0)
+    return StreamingResponse(
+        buffer,
+        media_type="application/zip",
+        headers={"Content-Disposition": "attachment; filename=modelo-anexos-clid.zip"},
+    )
+
+
 @app.exception_handler(HTTPException)
 async def http_exception_handler(_, exc: HTTPException) -> JSONResponse:
     return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
