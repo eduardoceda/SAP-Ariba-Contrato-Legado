@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import json
 from io import BytesIO, StringIO
+from pathlib import Path
 from zipfile import ZipFile
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
@@ -37,6 +38,9 @@ from app.services.validator import build_executive_summary, validate_attachment_
 
 settings = Settings()
 app = FastAPI(title=settings.app_name, version="1.1.0")
+BASE_DIR = Path(__file__).resolve().parents[1]
+CLID_TEMPLATE_PATH = BASE_DIR / "data" / "templates" / "clid-item-template.xlsx"
+CLID_TEMPLATE_FILENAME = "CLID_4700001278.xlsx"
 
 app.add_middleware(
     CORSMiddleware,
@@ -475,10 +479,14 @@ def download_unified_template() -> StreamingResponse:
 
 @app.get(f"{settings.api_prefix}/attachments/template")
 def download_attachments_template() -> StreamingResponse:
+    if not CLID_TEMPLATE_PATH.exists():
+        raise HTTPException(status_code=500, detail="Template CLID não encontrado.")
+
     buffer = BytesIO()
     with ZipFile(buffer, "w") as zip_file:
         zip_file.writestr("Documentos contratos/", "")
         zip_file.writestr("Documentos CLID/", "")
+        zip_file.writestr(f"Documentos CLID/{CLID_TEMPLATE_FILENAME}", CLID_TEMPLATE_PATH.read_bytes())
 
     buffer.seek(0)
     return StreamingResponse(
