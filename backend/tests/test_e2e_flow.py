@@ -6,11 +6,11 @@ from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi.testclient import TestClient
-from openpyxl import load_workbook
+from openpyxl import Workbook, load_workbook
 
-from app.models import ExecutiveSummary, ValidationIssue, ValidationReport, ValidationSummary
+from app.models import AribaDataset, ExecutiveSummary, ValidationIssue, ValidationReport, ValidationSummary
 from app.main import app
-from app.services.exporter import build_report_xlsx
+from app.services.exporter import build_package_zip_with_attachments, build_report_xlsx
 import app.services.run_history as run_history
 
 SAMPLE_DIR = Path(__file__).resolve().parent / "fixtures" / "sample_zip"
@@ -37,6 +37,158 @@ def _build_full_sample_zip(base_dir: Path) -> bytes:
             if child.is_file():
                 archive.write(child, child.relative_to(base_dir).as_posix())
     return buffer.getvalue()
+
+
+def _build_portuguese_clid_workbook() -> bytes:
+    workbook = Workbook()
+
+    header_sheet = workbook.active
+    header_sheet.title = "Cabeçalho do contrato"
+    header_sheet.append(
+        [
+            "Código do evento",
+            "Título",
+            "Descrição",
+            "Solicitante",
+            "Nome da empresa",
+            "Nome do fornecedor",
+            "Domínio do código do fornecedor",
+            "Valor do código do fornecedor",
+            "Origem do contrato",
+            "Código do contrato do Buyer",
+            "Tipo de condição",
+            "Tipo de limite",
+            "Data do contrato",
+            "Data de efetivação",
+            "Data de vencimento",
+            "Moeda do contrato",
+            "Valor mínimo",
+            "Valor máximo",
+            "Documento de referência",
+        ]
+    )
+    header_sheet.append(
+        [
+            "Doc123",
+            "Contrato teste",
+            "Descricao teste",
+            "USR001",
+            "Empresa X",
+            "Fornecedor Y",
+            "sap",
+            "0001",
+            "CW1",
+            "LCW4700001278",
+            "Item",
+            "",
+            "2026-03-01",
+            "2026-03-01",
+            "2026-12-31",
+            "BRL",
+            "10",
+            "100",
+            "REF-1",
+        ]
+    )
+
+    item_sheet = workbook.create_sheet("Info. sobre item do contrato")
+    item_sheet.append(
+        [
+            "Pacote",
+            "Número do item",
+            "Nome abreviado",
+            "Descrição",
+            "Descrição estendida",
+            "Número de peça do fornecedor",
+            "Unidade de medida",
+            "Preço unitário",
+            "Valor do desconto",
+            "Desconto do fornecedor (%)",
+            "Moeda do preço unitário",
+            "Domínio de classificação",
+            "Código de classificação",
+            "Quantidade",
+            "Quantidade mínima",
+            "Quantidade máxima",
+            "Valor mínimo",
+            "Valor máximo",
+            "Nome do fabricante",
+            "NP fabricante",
+            "Tipo de limite",
+            "Número",
+            "LineType",
+            "Status do item",
+            "Número da linha do sistema externo",
+            "Número da linha do sistema integrado",
+            "Código do evento de origem",
+            "Número do item de linha",
+        ]
+    )
+    item_sheet.append(
+        [
+            "",
+            "10",
+            "Item curto",
+            "Descricao item",
+            "Descricao item completa",
+            "PART-1",
+            "UN",
+            "100.00",
+            "0",
+            "0",
+            "BRL",
+            "custom",
+            "1000000073",
+            "1",
+            "1",
+            "1",
+            "10",
+            "100",
+            "Fabricante X",
+            "MFG-1",
+            "Item",
+            "0001",
+            "LineType",
+            "Published",
+            "EXT-1",
+            "INT-1",
+            "Doc123",
+            "10",
+        ]
+    )
+
+    header_attr_sheet = workbook.create_sheet("Atributos de cabeçalho")
+    header_attr_sheet.append(
+        [
+            "Nome do atributo",
+            "Valor do atributo",
+            "Texto de exibição",
+            "Tipo",
+            "Descrição",
+            "Coluna de seção da tabela",
+        ]
+    )
+    header_attr_sheet.append(["HeaderAttr", "Valor", "HeaderAttr", "Texto", "Descricao", ""])
+
+    item_attr_sheet = workbook.create_sheet("Atributos do item")
+    item_attr_sheet.append(
+        [
+            "Número do item",
+            "Nome do atributo",
+            "Valor do atributo",
+            "Texto de exibição",
+            "Tipo",
+            "Descrição",
+            "A condição é adicionada do mestre do item",
+            "Fórmula",
+            "Status do item",
+        ]
+    )
+    item_attr_sheet.append(["10", "Plant", "1010", "Plant", "MasterData", "Descricao", "No", "", ""])
+
+    output = BytesIO()
+    workbook.save(output)
+    return output.getvalue()
 
 
 def test_e2e_critical_flow(tmp_path, monkeypatch) -> None:
@@ -179,3 +331,76 @@ def test_report_xlsx_includes_issue_guidance() -> None:
     assert issues_sheet["D2"].value == "Preencha o campo obrigatório na linha indicada."
     assert issues_sheet.freeze_panes == "A2"
     assert issues_sheet.auto_filter.ref is not None
+
+
+def test_export_package_with_attachments_normalizes_clid_layout() -> None:
+    dataset = AribaDataset(
+        contract_content_documents=[
+            {
+                "Workspace": "LCW4700001278",
+                "File": "Documentos CLID/CLID_4700001278.xlsx",
+                "title": "CLID_4700001278.xlsx",
+            }
+        ]
+    )
+
+    attachments_buffer = BytesIO()
+    with ZipFile(attachments_buffer, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("Documentos CLID/CLID_4700001278.xlsx", _build_portuguese_clid_workbook())
+
+    package_bytes = build_package_zip_with_attachments(
+        dataset=dataset,
+        attachments_zip_bytes=attachments_buffer.getvalue(),
+        include_report_json=False,
+    )
+
+    with ZipFile(BytesIO(package_bytes), "r") as archive:
+        clid_bytes = archive.read("Documentos CLID/CLID_4700001278.xlsx")
+
+    workbook = load_workbook(BytesIO(clid_bytes), data_only=False)
+    assert workbook.sheetnames == [
+        "Contract Header",
+        "Contract Item Information",
+        "Header Attributes",
+        "Item Attributes",
+    ]
+
+    contract_header = workbook["Contract Header"]
+    contract_header_columns = [contract_header.cell(row=1, column=index).value for index in range(1, 20)]
+    assert contract_header_columns[:6] == [
+        "Event ID",
+        "Title",
+        "Description",
+        "Requester",
+        "Company Name",
+        "Supplier Name",
+    ]
+    assert contract_header["A2"].value == "Doc123"
+    assert contract_header["B2"].value == "Contrato teste"
+
+    item_information = workbook["Contract Item Information"]
+    item_information_columns = [item_information.cell(row=1, column=index).value for index in range(1, 28)]
+    assert item_information_columns[-3:] == [
+        "External System Line Number",
+        "Source Event ID",
+        "Line Item Number",
+    ]
+    assert item_information["B2"].value == "10"
+    assert item_information["Z2"].value == "Doc123"
+    assert item_information["AA2"].value == "10"
+
+    item_attributes = workbook["Item Attributes"]
+    item_attribute_columns = [item_attributes.cell(row=1, column=index).value for index in range(1, 10)]
+    assert item_attribute_columns == [
+        "Item Number",
+        "Attribute Name",
+        "Attribute Value",
+        "Display Text",
+        "Type",
+        "Description",
+        "Is Term added from Item Master",
+        "Formula",
+        "Item Status",
+    ]
+    assert item_attributes["A2"].value == "10"
+    assert item_attributes["B2"].value == "Plant"

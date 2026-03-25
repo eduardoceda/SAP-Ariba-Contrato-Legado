@@ -4,7 +4,7 @@ import csv
 import json
 from io import BytesIO, StringIO
 from pathlib import Path
-from zipfile import ZipFile
+from zipfile import ZIP_DEFLATED, ZipFile
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
@@ -104,7 +104,87 @@ def _apply_import_parameters_override(
 
 def _list_files_in_zip(data: bytes) -> set[str]:
     with ZipFile(BytesIO(data)) as zip_file:
-        return {name.replace("\\", "/") for name in zip_file.namelist() if not name.endswith("/")}
+        return {
+            _normalize_attachment_path(name) for name in zip_file.namelist() if not name.replace("\\", "/").endswith("/")
+        }
+
+
+def _normalize_attachment_path(path: str) -> str:
+    normalized = path.replace("\\", "/").strip().lstrip("./")
+    lowered = normalized.lower()
+
+    for expected_root in ("documentos contratos/", "documentos clid/"):
+        root_index = lowered.find(expected_root)
+        if root_index >= 0:
+            return normalized[root_index:]
+
+    return normalized
+
+
+async def _build_attachments_zip_from_files(
+    contract_attachments: list[UploadFile] | None,
+    clid_attachments: list[UploadFile] | None,
+) -> bytes | None:
+    entries: list[tuple[str, bytes]] = []
+
+    for folder_name, uploads in (
+        ("Documentos contratos", contract_attachments or []),
+        ("Documentos CLID", clid_attachments or []),
+    ):
+        for upload in uploads:
+            filename = Path(upload.filename or "").name.strip()
+            if not filename:
+                continue
+            relative_path = f"{folder_name}/{filename}"
+            file_bytes = await upload.read()
+            entries.append((relative_path, file_bytes))
+
+    if not entries:
+        return None
+
+    seen_paths: set[str] = set()
+    buffer = BytesIO()
+    with ZipFile(buffer, "w", compression=ZIP_DEFLATED) as zip_file:
+        for relative_path, file_bytes in entries:
+            normalized_path = _normalize_attachment_path(relative_path)
+            normalized_key = normalized_path.lower()
+            if normalized_key in seen_paths:
+                raise HTTPException(status_code=400, detail=f"Arquivo duplicado nos anexos: {normalized_path}")
+            seen_paths.add(normalized_key)
+            zip_file.writestr(normalized_path, file_bytes)
+
+    return buffer.getvalue()
+
+
+async def _read_attachments_source(
+    attachments_zip: UploadFile | None,
+    contract_attachments: list[UploadFile] | None,
+    clid_attachments: list[UploadFile] | None,
+    *,
+    required: bool,
+) -> bytes | None:
+    has_folder_uploads = bool(contract_attachments) or bool(clid_attachments)
+    if attachments_zip is not None and has_folder_uploads:
+        raise HTTPException(
+            status_code=400,
+            detail="Envie um ZIP de anexos ou selecione as pastas Documentos contratos/ e Documentos CLID/, não ambos.",
+        )
+
+    if attachments_zip is not None:
+        if attachments_zip.filename and not attachments_zip.filename.lower().endswith(".zip"):
+            raise HTTPException(status_code=400, detail="attachments_zip deve ser um arquivo .zip")
+        attachments_bytes = await attachments_zip.read()
+        if required and not attachments_bytes:
+            raise HTTPException(status_code=400, detail="attachments_zip vazio")
+        return attachments_bytes or None
+
+    attachments_bytes = await _build_attachments_zip_from_files(contract_attachments, clid_attachments)
+    if required and not attachments_bytes:
+        raise HTTPException(
+            status_code=400,
+            detail="Selecione arquivos nas pastas Documentos contratos/ e/ou Documentos CLID/.",
+        )
+    return attachments_bytes
 
 
 def _build_analysis_response(
@@ -305,24 +385,27 @@ def ingest_unified_manual(payload: UnifiedManualRequest) -> AnalysisResponse:
 @app.post(f"{settings.api_prefix}/attachments/validate", response_model=AttachmentValidationResponse)
 async def validate_attachments_zip(
     dataset_json: str = Form(...),
-    attachments_zip: UploadFile = File(...),
+    attachments_zip: UploadFile | None = File(default=None),
+    contract_attachments: list[UploadFile] | None = File(default=None),
+    clid_attachments: list[UploadFile] | None = File(default=None),
 ) -> AttachmentValidationResponse:
-    if attachments_zip.filename and not attachments_zip.filename.lower().endswith(".zip"):
-        raise HTTPException(status_code=400, detail="attachments_zip deve ser um arquivo .zip")
-
     try:
         dataset = AribaDataset.model_validate_json(dataset_json)
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"dataset_json inválido: {exc}") from exc
 
-    attachments_bytes = await attachments_zip.read()
-    if not attachments_bytes:
-        raise HTTPException(status_code=400, detail="attachments_zip vazio")
-
     try:
+        attachments_bytes = await _read_attachments_source(
+            attachments_zip,
+            contract_attachments,
+            clid_attachments,
+            required=True,
+        )
         available_paths = _list_files_in_zip(attachments_bytes)
+    except HTTPException:
+        raise
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"Falha ao ler attachments_zip: {exc}") from exc
+        raise HTTPException(status_code=400, detail=f"Falha ao ler anexos/CLID: {exc}") from exc
 
     summary, issues, stats = validate_attachment_bundle(dataset, available_paths)
     return AttachmentValidationResponse(summary=summary, issues=issues, stats=stats)
@@ -351,6 +434,8 @@ async def export_package_with_attachments(
     include_report_json: bool = Form(default=True),
     report_json: str | None = Form(default=None),
     attachments_zip: UploadFile | None = File(default=None),
+    contract_attachments: list[UploadFile] | None = File(default=None),
+    clid_attachments: list[UploadFile] | None = File(default=None),
     run_id: str | None = Form(default=None),
 ) -> StreamingResponse:
     try:
@@ -366,10 +451,12 @@ async def export_package_with_attachments(
             raise HTTPException(status_code=400, detail=f"report_json inválido: {exc}") from exc
 
     attachments_bytes: bytes | None = None
-    if attachments_zip is not None:
-        if attachments_zip.filename and not attachments_zip.filename.lower().endswith(".zip"):
-            raise HTTPException(status_code=400, detail="attachments_zip deve ser um arquivo .zip")
-        attachments_bytes = await attachments_zip.read()
+    attachments_bytes = await _read_attachments_source(
+        attachments_zip,
+        contract_attachments,
+        clid_attachments,
+        required=False,
+    )
 
     zip_content = build_package_zip_with_attachments(
         dataset=dataset,

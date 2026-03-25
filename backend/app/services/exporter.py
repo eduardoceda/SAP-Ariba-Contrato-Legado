@@ -1,14 +1,109 @@
 from __future__ import annotations
 
 import json
+import unicodedata
 from io import BytesIO
+from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
 
 from app.models import AribaDataset, ExecutiveSummary, ValidationReport
 from app.services.csv_io import dataset_to_csv_string
+
+CLID_TEMPLATE_PATH = Path(__file__).resolve().parents[2] / "data" / "templates" / "clid-item-template.xlsx"
+
+CLID_SHEET_SPECS = (
+    {
+        "target_title": "Contract Header",
+        "aliases": ("Contract Header", "Cabeçalho do contrato"),
+        "headers": {
+            "Event ID": ("Event ID", "Código do evento"),
+            "Title": ("Title", "Título"),
+            "Description": ("Description", "Descrição"),
+            "Requester": ("Requester", "Solicitante"),
+            "Company Name": ("Company Name", "Nome da empresa"),
+            "Supplier Name": ("Supplier Name", "Nome do fornecedor"),
+            "SupplierID Domain": ("SupplierID Domain", "Domínio do código do fornecedor"),
+            "SupplierID Value": ("SupplierID Value", "Valor do código do fornecedor"),
+            "Contract Source": ("Contract Source", "Origem do contrato"),
+            "Buyer Contract ID": ("Buyer Contract ID", "Código do contrato do Buyer"),
+            "Term Type": ("Term Type", "Tipo de condição"),
+            "Limit Type": ("Limit Type", "Tipo de limite"),
+            "Agreement Date": ("Agreement Date", "Data do contrato"),
+            "Effective Date": ("Effective Date", "Data de efetivação"),
+            "Expiration Date": ("Expiration Date", "Data de vencimento"),
+            "Contract Currency": ("Contract Currency", "Moeda do contrato"),
+            "Minimum Amount": ("Minimum Amount", "Valor mínimo"),
+            "Maximum Amount": ("Maximum Amount", "Valor máximo"),
+            "Reference Document": ("Reference Document", "Documento de referência"),
+        },
+    },
+    {
+        "target_title": "Contract Item Information",
+        "aliases": ("Contract Item Information", "Info. sobre item do contrato"),
+        "headers": {
+            "Bundle": ("Bundle", "Pacote"),
+            "Item Number": ("Item Number", "Número do item"),
+            "Short Name": ("Short Name", "Nome abreviado"),
+            "Description": ("Description", "Descrição"),
+            "Extended Description": ("Extended Description", "Descrição estendida"),
+            "Supplier Part Number": ("Supplier Part Number", "Número de peça do fornecedor"),
+            "Unit Of Measure": ("Unit Of Measure", "Unidade de medida"),
+            "Unit Price": ("Unit Price", "Preço unitário"),
+            "Discount Amount": ("Discount Amount", "Valor do desconto"),
+            "Supplier Discount(%)": ("Supplier Discount(%)", "Desconto do fornecedor (%)"),
+            "Unit Price Currency": ("Unit Price Currency", "Moeda do preço unitário"),
+            "Classification Domain": ("Classification Domain", "Domínio de classificação"),
+            "Classification Code": ("Classification Code", "Código de classificação"),
+            "Quantity": ("Quantity", "Quantidade"),
+            "Minimum Quantity": ("Minimum Quantity", "Quantidade mínima"),
+            "Maximum Quantity": ("Maximum Quantity", "Quantidade máxima"),
+            "Minimum Amount": ("Minimum Amount", "Valor mínimo"),
+            "Maximum Amount": ("Maximum Amount", "Valor máximo"),
+            "Manufacturer Name": ("Manufacturer Name", "Nome do fabricante"),
+            "Manufacturer Part Number": ("Manufacturer Part Number", "NP fabricante"),
+            "Limit Type": ("Limit Type", "Tipo de limite"),
+            "Number": ("Number", "Número"),
+            "LineType": ("LineType", "LineType"),
+            "Item Status": ("Item Status", "Status do item"),
+            "External System Line Number": ("External System Line Number", "Número da linha do sistema externo"),
+            "Source Event ID": ("Source Event ID", "Código do evento de origem"),
+            "Line Item Number": ("Line Item Number", "Número do item de linha"),
+        },
+    },
+    {
+        "target_title": "Header Attributes",
+        "aliases": ("Header Attributes", "Atributos de cabeçalho"),
+        "headers": {
+            "Attribute Name": ("Attribute Name", "Nome do atributo"),
+            "Attribute Value": ("Attribute Value", "Valor do atributo"),
+            "Display Text": ("Display Text", "Texto de exibição"),
+            "Type": ("Type", "Tipo"),
+            "Description": ("Description", "Descrição"),
+            "Table Section Column": ("Table Section Column", "Coluna de seção da tabela"),
+        },
+    },
+    {
+        "target_title": "Item Attributes",
+        "aliases": ("Item Attributes", "Atributos do item"),
+        "headers": {
+            "Item Number": ("Item Number", "Número do item"),
+            "Attribute Name": ("Attribute Name", "Nome do atributo"),
+            "Attribute Value": ("Attribute Value", "Valor do atributo"),
+            "Display Text": ("Display Text", "Texto de exibição"),
+            "Type": ("Type", "Tipo"),
+            "Description": ("Description", "Descrição"),
+            "Is Term added from Item Master": (
+                "Is Term added from Item Master",
+                "A condição é adicionada do mestre do item",
+            ),
+            "Formula": ("Formula", "Fórmula"),
+            "Item Status": ("Item Status", "Status do item"),
+        },
+    },
+)
 
 RESERVED_EXPORT_FILES = {
     "contracts.csv",
@@ -48,6 +143,87 @@ ISSUE_GUIDANCE = {
 
 def _issue_guidance(code: str) -> str:
     return ISSUE_GUIDANCE.get(code, "Revise a linha e o campo indicados conforme o template.")
+
+
+def _normalize_attachment_archive_path(path: str) -> str:
+    normalized = path.replace("\\", "/").strip().lstrip("./")
+    lowered = normalized.lower()
+
+    for expected_root in ("documentos contratos/", "documentos clid/"):
+        root_index = lowered.find(expected_root)
+        if root_index >= 0:
+            return normalized[root_index:]
+
+    return normalized
+
+
+def _normalize_label(value: object) -> str:
+    text = "" if value is None else str(value).strip()
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(char for char in text if not unicodedata.combining(char))
+    return " ".join(text.lower().split())
+
+
+def _translate_clid_sheet_rows(source_workbook, spec: dict[str, object]) -> list[list[object]]:
+    aliases = {_normalize_label(alias) for alias in spec["aliases"]}
+    source_sheet = next((worksheet for worksheet in source_workbook.worksheets if _normalize_label(worksheet.title) in aliases), None)
+    if source_sheet is None:
+        return []
+
+    rows = list(source_sheet.iter_rows(values_only=True))
+    if not rows:
+        return []
+
+    source_headers = list(rows[0])
+    header_indexes = {
+        _normalize_label(header): index
+        for index, header in enumerate(source_headers)
+        if _normalize_label(header)
+    }
+
+    translated_rows: list[list[object]] = []
+    for raw_row in rows[1:]:
+        if not any(value not in (None, "") for value in raw_row):
+            continue
+
+        next_row: list[object] = []
+        for target_header, aliases_for_header in spec["headers"].items():
+            value = ""
+            for alias in aliases_for_header:
+                header_index = header_indexes.get(_normalize_label(alias))
+                if header_index is None:
+                    continue
+                if header_index < len(raw_row):
+                    value = raw_row[header_index]
+                break
+            next_row.append(value)
+        translated_rows.append(next_row)
+
+    return translated_rows
+
+
+def _normalize_clid_workbook_bytes(data: bytes) -> bytes:
+    if not CLID_TEMPLATE_PATH.exists():
+        return data
+
+    source_workbook = load_workbook(BytesIO(data), read_only=True, data_only=False)
+    translated_by_sheet = {
+        spec["target_title"]: _translate_clid_sheet_rows(source_workbook, spec) for spec in CLID_SHEET_SPECS
+    }
+    if not any(rows for rows in translated_by_sheet.values()):
+        return data
+
+    template_workbook = load_workbook(CLID_TEMPLATE_PATH)
+    for spec in CLID_SHEET_SPECS:
+        target_sheet = template_workbook[spec["target_title"]]
+        if target_sheet.max_row > 1:
+            target_sheet.delete_rows(2, target_sheet.max_row - 1)
+        for row in translated_by_sheet[spec["target_title"]]:
+            target_sheet.append(row)
+
+    output = BytesIO()
+    template_workbook.save(output)
+    return output.getvalue()
 
 
 def _format_sheet(worksheet) -> None:
@@ -105,17 +281,32 @@ def build_package_zip_with_attachments(
         )
 
         if attachments_zip_bytes:
+            written_attachment_paths: set[str] = set()
+            zip_file.writestr("Documentos contratos/", "")
+            zip_file.writestr("Documentos CLID/", "")
             with ZipFile(BytesIO(attachments_zip_bytes), "r") as source_zip:
                 for entry in source_zip.infolist():
                     name = entry.filename.replace("\\", "/")
                     if name.endswith("/"):
                         continue
 
-                    base_name = name.split("/")[-1].lower()
+                    normalized_name = _normalize_attachment_archive_path(name)
+
+                    base_name = normalized_name.split("/")[-1].lower()
                     if base_name in RESERVED_EXPORT_FILES:
                         continue
 
-                    zip_file.writestr(name, source_zip.read(entry.filename))
+                    if normalized_name.lower() in written_attachment_paths:
+                        continue
+
+                    entry_bytes = source_zip.read(entry.filename)
+                    if normalized_name.lower().startswith("documentos clid/") and normalized_name.lower().endswith(
+                        (".xlsx", ".xlsm")
+                    ):
+                        entry_bytes = _normalize_clid_workbook_bytes(entry_bytes)
+
+                    zip_file.writestr(normalized_name, entry_bytes)
+                    written_attachment_paths.add(normalized_name.lower())
 
         if include_report_json and report is not None:
             zip_file.writestr("validation-report.json", json.dumps(report.model_dump(), indent=2, ensure_ascii=False))

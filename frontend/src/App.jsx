@@ -230,6 +230,22 @@ function isManualRowComplete(row) {
   return MANUAL_COLUMNS.every((field) => String(row?.[field] ?? "").trim() !== "");
 }
 
+function buildAttachmentUploadEntries(files, rootFolder) {
+  return (files || []).map((file) => {
+    const normalizedRelativePath = String(file.webkitRelativePath || "")
+      .replace(/\\/g, "/")
+      .replace(/^\/+/, "");
+    const relativeParts = normalizedRelativePath.split("/").filter(Boolean);
+    const relativeName =
+      relativeParts.length > 1 ? relativeParts.slice(1).join("/") : file.name || relativeParts[0] || "arquivo";
+
+    return {
+      file,
+      path: `${rootFolder}/${relativeName}`,
+    };
+  });
+}
+
 function parseCsvList(value) {
   return value
     .split(",")
@@ -1142,6 +1158,8 @@ export default function App() {
   const rulesRef = useRef(null);
   const analyzeRef = useRef(null);
   const reviewRef = useRef(null);
+  const contractAttachmentsInputRef = useRef(null);
+  const clidAttachmentsInputRef = useRef(null);
   const wizardModeInitializedRef = useRef(false);
   const skipNextWizardResetRef = useRef(false);
   const sessionHydratedRef = useRef(false);
@@ -1149,7 +1167,8 @@ export default function App() {
   const [wizardMode, setWizardMode] = useState("zip");
   const [zipFile, setZipFile] = useState(null);
   const [unifiedFile, setUnifiedFile] = useState(null);
-  const [attachmentsZipFile, setAttachmentsZipFile] = useState(null);
+  const [contractAttachmentFiles, setContractAttachmentFiles] = useState([]);
+  const [clidAttachmentFiles, setClidAttachmentFiles] = useState([]);
 
   const [manualRows, setManualRows] = useState([createManualRow()]);
   const [analysis, setAnalysis] = useState(null);
@@ -1196,6 +1215,25 @@ export default function App() {
     () => manualRows.filter((row) => hasManualRowInput(row) && !isManualRowComplete(row)).length,
     [manualRows]
   );
+  const attachmentUploadEntries = useMemo(
+    () => [
+      ...buildAttachmentUploadEntries(contractAttachmentFiles, "Documentos contratos"),
+      ...buildAttachmentUploadEntries(clidAttachmentFiles, "Documentos CLID"),
+    ],
+    [contractAttachmentFiles, clidAttachmentFiles]
+  );
+  const selectedAttachmentFilesCount = attachmentUploadEntries.length;
+  const uploadedAttachmentsSource = selectedAttachmentFilesCount > 0 ? attachmentUploadEntries : null;
+
+  useEffect(() => {
+    [contractAttachmentsInputRef.current, clidAttachmentsInputRef.current].forEach((input) => {
+      if (!input) {
+        return;
+      }
+      input.setAttribute("webkitdirectory", "");
+      input.setAttribute("directory", "");
+    });
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -1497,7 +1535,7 @@ export default function App() {
     return manualRowsCompleted > 0 && manualRowsIncomplete === 0;
   }, [wizardMode, zipFile, unifiedFile, manualRowsCompleted, manualRowsIncomplete]);
 
-  const attachmentsReady = wizardMode === "zip" ? true : Boolean(attachmentsZipFile);
+  const attachmentsReady = wizardMode === "zip" ? true : selectedAttachmentFilesCount > 0;
   const analysisReady = Boolean(analysis);
 
   const steps = useMemo(() => {
@@ -1537,7 +1575,7 @@ export default function App() {
   const importParamsTotal = analysis?.dataset?.import_projects_parameters?.length || 0;
   const hasMappedDocuments = contractDocumentsTotal > 0 || clidDocumentsTotal > 0;
   const attachmentSourceAvailable =
-    analysisSource === "zip" ? Boolean(sourceZipForExport) : Boolean(attachmentsZipFile);
+    analysisSource === "zip" ? Boolean(sourceZipForExport) : selectedAttachmentFilesCount > 0;
 
   const attachmentCheckRequired = hasMappedDocuments && analysisSource !== "zip";
   const attachmentCheckExecuted = !attachmentCheckRequired || Boolean(attachmentValidation);
@@ -1555,23 +1593,23 @@ export default function App() {
   const mappedAttachmentLabel = mappedAttachmentParts.join(" e ");
   const attachmentSourceLabel = attachmentCheckRequired
     ? attachmentSourceAvailable
-      ? `ZIP de anexos/CLID informado para validar ${mappedAttachmentLabel}.`
-      : `Envie o ZIP de anexos/CLID para validar ${mappedAttachmentLabel} antes da exportação.`
-    : "Sem anexos/CLID mapeados: envio de ZIP adicional não é obrigatório.";
+      ? `Arquivos das pastas de anexos/CLID informados para validar ${mappedAttachmentLabel}.`
+      : `Selecione as pastas de anexos/CLID para validar ${mappedAttachmentLabel} antes da exportação.`
+    : "Sem anexos/CLID mapeados: seleção adicional de pastas não é obrigatória.";
   const attachmentValidationExecutionRequired =
     attachmentCheckRequired && attachmentSourceAvailable;
   const attachmentValidationExecutionLabel = attachmentValidationExecutionRequired
     ? attachmentCheckExecuted
       ? "Validação inteligente de anexos executada."
-      : "Clique em 'Validar ZIP de anexos' para conferir as referências antes de exportar."
-    : "Validação inteligente de anexos será executada após enviar o ZIP de anexos/CLID.";
+      : "Clique em 'Validar anexos selecionados' para conferir as referências antes de exportar."
+    : "Validação inteligente de anexos será executada após selecionar as pastas de anexos/CLID.";
   const attachmentReferenceCheckRequired =
     attachmentCheckRequired && attachmentSourceAvailable && attachmentCheckExecuted;
   const attachmentReferenceLabel = attachmentReferenceCheckRequired
     ? attachmentMissingReferences === 0
-      ? "Todas as referências de anexos/CLID foram encontradas no ZIP."
-      : `${attachmentMissingReferences} referência(s) de anexos/CLID não foram encontradas no ZIP. Revise a coluna File nos CSVs ou inclua os arquivos faltantes.`
-    : "Referências de anexos/CLID serão verificadas após validar o ZIP.";
+      ? "Todas as referências de anexos/CLID foram encontradas nas pastas selecionadas."
+      : `${attachmentMissingReferences} referência(s) de anexos/CLID não foram encontradas nas pastas selecionadas. Revise a coluna File nos CSVs ou inclua os arquivos faltantes.`
+    : "Referências de anexos/CLID serão verificadas após validar as pastas selecionadas.";
   const attachmentWarningsLabel = attachmentReferenceCheckRequired
     ? attachmentCheckWarnings === 0
       ? "Sem avisos de anexos/CLID."
@@ -1871,8 +1909,34 @@ export default function App() {
     }, "manual", null);
   }
 
-  async function validateAttachmentsAgainstDataset(dataset, zipFileToValidate) {
-    if (!dataset || !zipFileToValidate) {
+  function handleContractAttachmentsChange(event) {
+    setContractAttachmentFiles(Array.from(event.target.files || []));
+    setAttachmentValidation(null);
+  }
+
+  function handleClidAttachmentsChange(event) {
+    setClidAttachmentFiles(Array.from(event.target.files || []));
+    setAttachmentValidation(null);
+  }
+
+  function appendAttachmentsPayload(form, attachmentSource) {
+    if (!attachmentSource) {
+      return;
+    }
+
+    if (attachmentSource instanceof File) {
+      form.append("attachments_zip", attachmentSource);
+      return;
+    }
+
+    attachmentSource.forEach(({ file, path }) => {
+      const fieldName = path.startsWith("Documentos CLID/") ? "clid_attachments" : "contract_attachments";
+      form.append(fieldName, file, file.name);
+    });
+  }
+
+  async function validateAttachmentsAgainstDataset(dataset, attachmentSource) {
+    if (!dataset || !attachmentSource) {
       return null;
     }
     setAttachmentValidationLoading(true);
@@ -1880,7 +1944,7 @@ export default function App() {
     try {
       const form = new FormData();
       form.append("dataset_json", JSON.stringify(dataset));
-      form.append("attachments_zip", zipFileToValidate);
+      appendAttachmentsPayload(form, attachmentSource);
       const response = await fetch(`${API_PREFIX}/attachments/validate`, {
         method: "POST",
         body: form,
@@ -1905,10 +1969,9 @@ export default function App() {
       setError("Execute a pré-análise antes de validar anexos.");
       return;
     }
-    const source =
-      analysisSource === "zip" ? sourceZipForExport || zipFile : attachmentsZipFile || sourceZipForExport;
+    const source = analysisSource === "zip" ? sourceZipForExport || zipFile : uploadedAttachmentsSource;
     if (!source) {
-      setError("Selecione o ZIP de anexos para validar.");
+      setError("Selecione as pastas de anexos/CLID para validar.");
       return;
     }
     const result = await validateAttachmentsAgainstDataset(analysis.dataset, source);
@@ -1934,7 +1997,7 @@ export default function App() {
       (result.dataset?.contract_documents?.length || 0) > 0 ||
       (result.dataset?.contract_content_documents?.length || 0) > 0;
     if (hasDocuments) {
-      const source = wizardMode === "zip" ? zipFile : attachmentsZipFile;
+      const source = wizardMode === "zip" ? zipFile : uploadedAttachmentsSource;
       if (source) {
         await validateAttachmentsAgainstDataset(result.dataset, source);
       }
@@ -1991,7 +2054,7 @@ export default function App() {
     const attachmentsSource =
       snapshot.analysisSource === "zip"
         ? snapshot.sourceZipForExport
-        : attachmentsZipFile || snapshot.sourceZipForExport;
+        : uploadedAttachmentsSource;
     if (attachmentsSource) {
       await validateAttachmentsAgainstDataset(result.dataset, attachmentsSource);
     }
@@ -2127,14 +2190,14 @@ export default function App() {
       return;
     }
 
-    const attachmentsSource = analysisSource === "zip" ? sourceZipForExport : attachmentsZipFile;
+    const attachmentsSource = analysisSource === "zip" ? sourceZipForExport : uploadedAttachmentsSource;
     const hasDocuments =
       (analysis.dataset.contract_documents?.length || 0) > 0 ||
       (analysis.dataset.contract_content_documents?.length || 0) > 0;
 
     if (analysisSource !== "zip" && hasDocuments && !attachmentsSource) {
       setError(
-        "Passo 2: anexe um .zip com Documentos contratos/ e Documentos CLID/ para gerar pacote importável no Ariba."
+        "Passo 2: selecione as pastas Documentos contratos/ e/ou Documentos CLID/ para gerar pacote importável no Ariba."
       );
       return;
     }
@@ -2152,9 +2215,7 @@ export default function App() {
       if (analysis.run_id) {
         form.append("run_id", analysis.run_id);
       }
-      if (attachmentsSource) {
-        form.append("attachments_zip", attachmentsSource);
-      }
+      appendAttachmentsPayload(form, attachmentsSource);
 
       const response = await fetch(`${API_PREFIX}/export/package-with-attachments`, {
         method: "POST",
@@ -2428,23 +2489,36 @@ export default function App() {
         <section ref={attachmentsRef} className="panel stepPanel">
           <div className="stepHeader">
             <span className="stepNumber">Passo {attachmentsStepNumber}</span>
-            <h2>Subir anexos e CLID</h2>
+            <h2>Selecionar anexos e CLID</h2>
             <span className={attachmentsReady ? "stepStatus done" : "stepStatus pending"}>
               {attachmentsReady ? "Concluído" : "Pendente"}
             </span>
           </div>
           <div className="inputBlock attachmentsBlock">
-            <label htmlFor="attachmentsZipUpload">Arquivo .zip de anexos</label>
-            <input
-              id="attachmentsZipUpload"
-              type="file"
-              accept=".zip"
-              onChange={(event) => setAttachmentsZipFile(event.target.files?.[0] || null)}
-            />
             <p className="hint">
-              Use um zip contendo as pastas <code>Documentos contratos/</code> e{" "}
-              <code>Documentos CLID/</code>.
+              Selecione as pastas <code>Documentos contratos/</code> e <code>Documentos CLID/</code>.
+              O sistema reempacota o ZIP final do Ariba com essas duas pastas na raiz, sem estruturas
+              extras.
             </p>
+            <label htmlFor="contractAttachmentsUpload">Pasta Documentos contratos/</label>
+            <input
+              id="contractAttachmentsUpload"
+              ref={contractAttachmentsInputRef}
+              type="file"
+              multiple
+              onChange={handleContractAttachmentsChange}
+            />
+            <span className="hint">{contractAttachmentFiles.length} arquivo(s) selecionado(s).</span>
+            <label htmlFor="clidAttachmentsUpload">Pasta Documentos CLID/</label>
+            <input
+              id="clidAttachmentsUpload"
+              ref={clidAttachmentsInputRef}
+              type="file"
+              multiple
+              accept=".xls,.xlsx,.xlsm,.csv"
+              onChange={handleClidAttachmentsChange}
+            />
+            <span className="hint">{clidAttachmentFiles.length} arquivo(s) selecionado(s).</span>
             <div className="inlineActions">
               <button className="secondary" type="button" onClick={downloadAttachmentsTemplate}>
                 Baixar modelo das pastas
@@ -2453,9 +2527,9 @@ export default function App() {
                 className="secondary"
                 type="button"
                 onClick={runAttachmentValidation}
-                disabled={!analysis || !attachmentsZipFile || attachmentValidationLoading}
+                disabled={!analysis || !uploadedAttachmentsSource || attachmentValidationLoading}
               >
-                {attachmentValidationLoading ? "Validando anexos..." : "Validar ZIP de anexos"}
+                {attachmentValidationLoading ? "Validando anexos..." : "Validar anexos selecionados"}
               </button>
             </div>
           </div>
@@ -2731,7 +2805,7 @@ export default function App() {
                       }}
                     >
                       {item.actionKey === "goToAttachmentsStep"
-                        ? "Ir para Passo 2 (Subir anexos e CLID)"
+                        ? "Ir para Passo 2 (Selecionar anexos e CLID)"
                         : "Abrir aba Anexos"}
                     </button>
                   )}
@@ -2817,7 +2891,7 @@ export default function App() {
                 Exportação:{" "}
                 {analysisSource === "zip"
                   ? "anexos serão preservados do pacote Ariba original."
-                  : "inclua ZIP de anexos para gerar pacote 100% importável no Ariba."}
+                  : "selecione as pastas de anexos/CLID para gerar pacote 100% importável no Ariba."}
               </p>
             </div>
             <div className="actions">
@@ -3056,7 +3130,10 @@ export default function App() {
                     className="secondary"
                     type="button"
                     onClick={runAttachmentValidation}
-                    disabled={attachmentValidationLoading || (!sourceZipForExport && !attachmentsZipFile)}
+                    disabled={
+                      attachmentValidationLoading ||
+                      (analysisSource === "zip" ? !(sourceZipForExport || zipFile) : !uploadedAttachmentsSource)
+                    }
                   >
                     {attachmentValidationLoading ? "Validando..." : "Revalidar anexos"}
                   </button>
