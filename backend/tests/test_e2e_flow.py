@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 from io import BytesIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -236,6 +237,10 @@ def test_e2e_critical_flow(tmp_path, monkeypatch) -> None:
     )
     assert export_package_response.status_code == 200
     assert len(export_package_response.content) > 500
+    assert re.fullmatch(
+        r"attachment; filename=PCT_LCW_\d{8}_\d{6}\.zip",
+        export_package_response.headers.get("content-disposition", ""),
+    )
 
     export_with_attachments_response = client.post(
         "/api/export/package-with-attachments",
@@ -249,6 +254,10 @@ def test_e2e_critical_flow(tmp_path, monkeypatch) -> None:
     )
     assert export_with_attachments_response.status_code == 200
     assert len(export_with_attachments_response.content) > 500
+    assert re.fullmatch(
+        r"attachment; filename=PCT_LCW_\d{8}_\d{6}\.zip",
+        export_with_attachments_response.headers.get("content-disposition", ""),
+    )
 
     export_report_response = client.post(
         "/api/export/report.xlsx",
@@ -404,3 +413,29 @@ def test_export_package_with_attachments_normalizes_clid_layout() -> None:
     ]
     assert item_attributes["A2"].value == "10"
     assert item_attributes["B2"].value == "Plant"
+
+
+def test_export_package_with_invalid_clid_workbook_keeps_original_attachment() -> None:
+    dataset = AribaDataset(
+        contract_content_documents=[
+            {
+                "Workspace": "LCW4700001278",
+                "File": "Documentos CLID/CLID_4700001278.xlsx",
+                "title": "CLID_4700001278.xlsx",
+            }
+        ]
+    )
+
+    original_bytes = b"not-a-valid-xlsx"
+    attachments_buffer = BytesIO()
+    with ZipFile(attachments_buffer, "w", compression=ZIP_DEFLATED) as archive:
+        archive.writestr("Documentos CLID/CLID_4700001278.xlsx", original_bytes)
+
+    package_bytes = build_package_zip_with_attachments(
+        dataset=dataset,
+        attachments_zip_bytes=attachments_buffer.getvalue(),
+        include_report_json=False,
+    )
+
+    with ZipFile(BytesIO(package_bytes), "r") as archive:
+        assert archive.read("Documentos CLID/CLID_4700001278.xlsx") == original_bytes

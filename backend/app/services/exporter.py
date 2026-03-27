@@ -4,10 +4,11 @@ import json
 import unicodedata
 from io import BytesIO
 from pathlib import Path
-from zipfile import ZIP_DEFLATED, ZipFile
+from zipfile import ZIP_DEFLATED, BadZipFile, ZipFile
 
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils import get_column_letter
+from openpyxl.utils.exceptions import InvalidFileException
 
 from app.models import AribaDataset, ExecutiveSummary, ValidationReport
 from app.services.csv_io import dataset_to_csv_string
@@ -206,7 +207,11 @@ def _normalize_clid_workbook_bytes(data: bytes) -> bytes:
     if not CLID_TEMPLATE_PATH.exists():
         return data
 
-    source_workbook = load_workbook(BytesIO(data), read_only=True, data_only=False)
+    try:
+        source_workbook = load_workbook(BytesIO(data), read_only=True, data_only=False)
+    except (BadZipFile, InvalidFileException, KeyError, OSError, ValueError):
+        return data
+
     translated_by_sheet = {
         spec["target_title"]: _translate_clid_sheet_rows(source_workbook, spec) for spec in CLID_SHEET_SPECS
     }

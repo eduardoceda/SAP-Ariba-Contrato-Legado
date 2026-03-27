@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import csv
 import json
+from datetime import datetime
 from io import BytesIO, StringIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
@@ -49,6 +50,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+def _build_package_zip_filename() -> str:
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return f"PCT_LCW_{timestamp}.zip"
 
 
 def _parse_rules(raw_rules: str | None) -> ValidationRules:
@@ -424,7 +430,7 @@ def export_package(payload: ExportRequest) -> StreamingResponse:
     return StreamingResponse(
         BytesIO(zip_content),
         media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=ariba-package.zip"},
+        headers={"Content-Disposition": f"attachment; filename={_build_package_zip_filename()}"},
     )
 
 
@@ -470,7 +476,7 @@ async def export_package_with_attachments(
     return StreamingResponse(
         BytesIO(zip_content),
         media_type="application/zip",
-        headers={"Content-Disposition": "attachment; filename=ariba-package-importable.zip"},
+        headers={"Content-Disposition": f"attachment; filename={_build_package_zip_filename()}"},
     )
 
 
