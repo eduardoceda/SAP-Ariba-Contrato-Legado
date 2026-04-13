@@ -803,6 +803,11 @@ button.danger {
   margin: 0;
 }
 
+.missingAttachmentSourceBlock {
+  display: grid;
+  gap: 6px;
+}
+
 .suggestionCard p {
   margin: 0 0 8px;
   overflow-wrap: anywhere;

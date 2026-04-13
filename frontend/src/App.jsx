@@ -204,6 +204,11 @@ const AUTO_FIXABLE_CODES = new Set([
 const SESSION_STORAGE_KEY = "ariba_legacy_session_v2";
 const ARIBA_UNSUPPORTED_MAX_DATE = "9999-12-31";
 const ARIBA_SUPPORTED_MAX_DATE = "9999-01-01";
+const ATTACHMENT_SOURCE_FILTER_OPTIONS = [
+  { value: "all", label: "Todos" },
+  { value: "ContractDocuments.csv", label: "ContractDocuments.csv" },
+  { value: "ContractContentDocuments.csv", label: "ContractContentDocuments.csv" },
+];
 
 const MANUAL_ROW_DEFAULTS = Object.freeze({
   ContractId: "",
@@ -1303,6 +1308,7 @@ export default function App() {
 
   const [attachmentValidation, setAttachmentValidation] = useState(null);
   const [attachmentValidationLoading, setAttachmentValidationLoading] = useState(false);
+  const [attachmentSourceFilter, setAttachmentSourceFilter] = useState("all");
   const [currentStepId, setCurrentStepId] = useState("source");
   const [reviewTab, setReviewTab] = useState("summary");
   const [pendingFixPlan, setPendingFixPlan] = useState(null);
@@ -1439,6 +1445,9 @@ export default function App() {
       if (typeof payload.contractFilter === "string") {
         setContractFilter(payload.contractFilter);
       }
+      if (typeof payload.attachmentSourceFilter === "string") {
+        setAttachmentSourceFilter(payload.attachmentSourceFilter);
+      }
       if (typeof payload.showOnlyCriticalPending === "boolean") {
         setShowOnlyCriticalPending(payload.showOnlyCriticalPending);
       }
@@ -1493,6 +1502,7 @@ export default function App() {
       severityFilter,
       messageTypeFilter,
       contractFilter,
+      attachmentSourceFilter,
       showOnlyCriticalPending,
       profileNameInput,
       selectedProfileName,
@@ -1518,6 +1528,7 @@ export default function App() {
     severityFilter,
     messageTypeFilter,
     contractFilter,
+    attachmentSourceFilter,
     showOnlyCriticalPending,
     profileNameInput,
     selectedProfileName,
@@ -1736,18 +1747,18 @@ export default function App() {
           groups.set(key, {
             key,
             contractId: contractId || "Sem contrato identificado",
-            sourceFiles: new Set(),
-            paths: new Set(),
+            sources: new Map(),
           });
         }
         const group = groups.get(key);
-        if (sourceFile) {
-          group.sourceFiles.add(sourceFile);
+        const sourceKey = sourceFile || "Sem origem identificada";
+        if (!group.sources.has(sourceKey)) {
+          group.sources.set(sourceKey, new Set());
         }
         const pathMatch = String(item.message || "").match(/Arquivo não encontrado no pacote:\s*(.+)$/);
         const missingPath = String(pathMatch?.[1] || "").trim();
         if (missingPath) {
-          group.paths.add(missingPath);
+          group.sources.get(sourceKey).add(missingPath);
         }
       });
 
@@ -1755,11 +1766,28 @@ export default function App() {
       .map((group) => ({
         key: group.key,
         contractId: group.contractId,
-        sourceFiles: Array.from(group.sourceFiles).sort((left, right) => left.localeCompare(right, "pt-BR")),
-        paths: Array.from(group.paths).sort((left, right) => left.localeCompare(right, "pt-BR")),
+        sourceEntries: Array.from(group.sources.entries())
+          .map(([sourceFile, paths]) => ({
+            sourceFile,
+            paths: Array.from(paths).sort((left, right) => left.localeCompare(right, "pt-BR")),
+          }))
+          .sort((left, right) => left.sourceFile.localeCompare(right.sourceFile, "pt-BR")),
       }))
       .sort((left, right) => left.contractId.localeCompare(right.contractId, "pt-BR"));
   }, [attachmentValidation]);
+  const filteredMissingAttachmentGroups = useMemo(
+    () =>
+      missingAttachmentGroups
+        .map((group) => ({
+          ...group,
+          sourceEntries:
+            attachmentSourceFilter === "all"
+              ? group.sourceEntries
+              : group.sourceEntries.filter((entry) => entry.sourceFile === attachmentSourceFilter),
+        }))
+        .filter((group) => group.sourceEntries.length > 0),
+    [missingAttachmentGroups, attachmentSourceFilter]
+  );
   const missingAttachmentContractsSummary = missingAttachmentGroups
     .slice(0, 4)
     .map((group) => group.contractId)
@@ -3379,26 +3407,52 @@ export default function App() {
               {missingAttachmentGroups.length > 0 && (
                 <section className="attachmentsMissingPanel">
                   <div className="sectionTitleRow">
-                    <h3>Contratos com arquivos faltantes</h3>
+                    <h3>
+                      Contratos com arquivos faltantes (
+                      {attachmentSourceFilter !== "all"
+                        ? `${filteredMissingAttachmentGroups.length} de ${missingAttachmentGroups.length}`
+                        : missingAttachmentGroups.length}
+                      )
+                    </h3>
                   </div>
                   <p className="hint">
                     Contratos com anexo ou CLID referenciado no CSV, mas sem o arquivo correspondente na pasta ou no
                     pacote validado.
                   </p>
+                  <div className="filtersRow">
+                    <label>
+                      Tipo de anexo
+                      <select value={attachmentSourceFilter} onChange={(event) => setAttachmentSourceFilter(event.target.value)}>
+                        {ATTACHMENT_SOURCE_FILTER_OPTIONS.map((option) => (
+                          <option key={option.value} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
                   <div className="missingAttachmentList">
-                    {missingAttachmentGroups.map((group) => (
+                    {filteredMissingAttachmentGroups.length === 0 && (
+                      <article className="missingAttachmentCard">
+                        <h4>Nenhum contrato encontrado</h4>
+                        <p className="hint">Nenhum arquivo faltante corresponde ao filtro selecionado.</p>
+                      </article>
+                    )}
+                    {filteredMissingAttachmentGroups.map((group) => (
                       <article className="missingAttachmentCard" key={group.key}>
                         <h4>{group.contractId}</h4>
-                        {group.sourceFiles.length > 0 && (
-                          <p className="hint">Origem: {group.sourceFiles.join(", ")}</p>
-                        )}
-                        <ul className="checklist">
-                          {group.paths.map((path) => (
-                            <li key={`${group.key}-${path}`} className="criticalPending">
-                              {path}
-                            </li>
-                          ))}
-                        </ul>
+                        {group.sourceEntries.map((entry) => (
+                          <div className="missingAttachmentSourceBlock" key={`${group.key}-${entry.sourceFile}`}>
+                            <p className="hint">Origem: {entry.sourceFile}</p>
+                            <ul className="checklist">
+                              {entry.paths.map((path) => (
+                                <li key={`${group.key}-${entry.sourceFile}-${path}`} className="criticalPending">
+                                  {path}
+                                </li>
+                              ))}
+                            </ul>
+                          </div>
+                        ))}
                       </article>
                     ))}
                   </div>
