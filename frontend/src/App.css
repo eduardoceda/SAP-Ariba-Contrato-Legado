@@ -747,6 +747,7 @@ button.danger {
 
 .executivePanel,
 .attachmentsValidationPanel,
+.attachmentsMissingPanel,
 .previewPanel,
 .fixPreviewPanel,
 .attachmentsSuggestionsPanel,
@@ -761,6 +762,7 @@ button.danger {
 
 .executivePanel h3,
 .attachmentsValidationPanel h3,
+.attachmentsMissingPanel h3,
 .previewPanel h3,
 .fixPreviewPanel h3,
 .attachmentsSuggestionsPanel h3,
@@ -774,6 +776,12 @@ button.danger {
   gap: 10px;
 }
 
+.missingAttachmentList {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 10px;
+}
+
 .suggestionCard {
   border: 1px solid var(--line);
   border-radius: 10px;
@@ -781,10 +789,29 @@ button.danger {
   background: #f8fbff;
 }
 
+.missingAttachmentCard {
+  border: 1px solid #fecaca;
+  border-radius: 10px;
+  padding: 10px;
+  background: #fff7f7;
+  display: grid;
+  gap: 8px;
+}
+
+.missingAttachmentCard h4,
+.missingAttachmentCard p {
+  margin: 0;
+}
+
 .suggestionCard p {
   margin: 0 0 8px;
   overflow-wrap: anywhere;
   word-break: break-word;
+}
+
+.missingAttachmentCard .checklist {
+  padding-left: 0;
+  list-style: none;
 }
 
 .sectionTitleRow {

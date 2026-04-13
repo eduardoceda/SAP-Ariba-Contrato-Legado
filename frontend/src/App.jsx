@@ -1717,12 +1717,59 @@ export default function App() {
   const attachmentSourceAvailable =
     analysisSource === "zip" ? Boolean(sourceZipForExport) : selectedAttachmentFilesCount > 0;
 
-  const attachmentCheckRequired = hasMappedDocuments && analysisSource !== "zip";
+  const attachmentCheckRequired = hasMappedDocuments;
+  const attachmentSourceSelectionRequired = attachmentCheckRequired && analysisSource !== "zip";
   const attachmentCheckExecuted = !attachmentCheckRequired || Boolean(attachmentValidation);
   const attachmentCheckErrors = attachmentValidation?.summary?.errors || 0;
   const attachmentCheckWarnings = attachmentValidation?.summary?.warnings || 0;
   const attachmentMissingReferences =
     attachmentValidation?.stats?.missing_files ?? attachmentCheckErrors;
+  const missingAttachmentGroups = useMemo(() => {
+    const groups = new Map();
+    (attachmentValidation?.issues || [])
+      .filter((item) => item?.code === "MISSING_ATTACHMENT")
+      .forEach((item) => {
+        const contractId = String(item.contract_id || "").trim();
+        const sourceFile = String(item.source_file || "").trim();
+        const key = contractId || sourceFile || "Sem contrato identificado";
+        if (!groups.has(key)) {
+          groups.set(key, {
+            key,
+            contractId: contractId || "Sem contrato identificado",
+            sourceFiles: new Set(),
+            paths: new Set(),
+          });
+        }
+        const group = groups.get(key);
+        if (sourceFile) {
+          group.sourceFiles.add(sourceFile);
+        }
+        const pathMatch = String(item.message || "").match(/Arquivo não encontrado no pacote:\s*(.+)$/);
+        const missingPath = String(pathMatch?.[1] || "").trim();
+        if (missingPath) {
+          group.paths.add(missingPath);
+        }
+      });
+
+    return Array.from(groups.values())
+      .map((group) => ({
+        key: group.key,
+        contractId: group.contractId,
+        sourceFiles: Array.from(group.sourceFiles).sort((left, right) => left.localeCompare(right, "pt-BR")),
+        paths: Array.from(group.paths).sort((left, right) => left.localeCompare(right, "pt-BR")),
+      }))
+      .sort((left, right) => left.contractId.localeCompare(right.contractId, "pt-BR"));
+  }, [attachmentValidation]);
+  const missingAttachmentContractsSummary = missingAttachmentGroups
+    .slice(0, 4)
+    .map((group) => group.contractId)
+    .join(", ");
+  const missingAttachmentContractsSuffix =
+    missingAttachmentGroups.length > 0
+      ? ` Contratos: ${missingAttachmentContractsSummary}${
+          missingAttachmentGroups.length > 4 ? ` +${missingAttachmentGroups.length - 4}` : ""
+        }.`
+      : "";
   const mappedAttachmentParts = [];
   if (contractDocumentsTotal > 0) {
     mappedAttachmentParts.push(`${contractDocumentsTotal} anexo(s) de contrato`);
@@ -1733,22 +1780,29 @@ export default function App() {
   const mappedAttachmentLabel = mappedAttachmentParts.join(" e ");
   const attachmentSourceLabel = attachmentCheckRequired
     ? attachmentSourceAvailable
-      ? `Arquivos das pastas de anexos/CLID informados para validar ${mappedAttachmentLabel}.`
-      : `Selecione as pastas de anexos/CLID para validar ${mappedAttachmentLabel} antes da exportação.`
+      ? analysisSource === "zip"
+        ? `Pacote ZIP original disponível para validar ${mappedAttachmentLabel}.`
+        : `Arquivos das pastas de anexos/CLID informados para validar ${mappedAttachmentLabel}.`
+      : attachmentSourceSelectionRequired
+        ? `Selecione as pastas de anexos/CLID para validar ${mappedAttachmentLabel} antes da exportação.`
+        : `Pacote ZIP original indisponível para validar ${mappedAttachmentLabel}. Refaça a análise do pacote antes da exportação.`
     : "Sem anexos/CLID mapeados: seleção adicional de pastas não é obrigatória.";
-  const attachmentValidationExecutionRequired =
-    attachmentCheckRequired && attachmentSourceAvailable;
+  const attachmentValidationExecutionRequired = attachmentCheckRequired && attachmentSourceAvailable;
   const attachmentValidationExecutionLabel = attachmentValidationExecutionRequired
     ? attachmentCheckExecuted
       ? "Validação inteligente de anexos executada."
-      : "Clique em 'Validar anexos selecionados' para conferir as referências antes de exportar."
-    : "Validação inteligente de anexos será executada após selecionar as pastas de anexos/CLID.";
+      : analysisSource === "zip"
+        ? "A validação inteligente de anexos do pacote ZIP precisa ser concluída antes da exportação."
+        : "Clique em 'Validar anexos selecionados' para conferir as referências antes de exportar."
+    : attachmentSourceSelectionRequired
+      ? "Validação inteligente de anexos será executada após selecionar as pastas de anexos/CLID."
+      : "Validação inteligente de anexos será executada após carregar o pacote ZIP.";
   const attachmentReferenceCheckRequired =
     attachmentCheckRequired && attachmentSourceAvailable && attachmentCheckExecuted;
   const attachmentReferenceLabel = attachmentReferenceCheckRequired
     ? attachmentMissingReferences === 0
       ? "Todas as referências de anexos/CLID foram encontradas nas pastas selecionadas."
-      : `${attachmentMissingReferences} referência(s) de anexos/CLID não foram encontradas nas pastas selecionadas. Revise a coluna File nos CSVs ou inclua os arquivos faltantes.`
+      : `${attachmentMissingReferences} referência(s) de anexos/CLID não foram encontradas nas pastas selecionadas. Revise a coluna File nos CSVs ou inclua os arquivos faltantes.${missingAttachmentContractsSuffix}`
     : "Referências de anexos/CLID serão verificadas após validar as pastas selecionadas.";
   const attachmentWarningsLabel = attachmentReferenceCheckRequired
     ? attachmentCheckWarnings === 0
@@ -1756,7 +1810,7 @@ export default function App() {
       : `${attachmentCheckWarnings} aviso(s) de anexos/CLID detectados.`
     : "Avisos de anexos/CLID serão exibidos após a validação do ZIP.";
   const attachmentPendingActionKey =
-    !attachmentSourceAvailable && wizardMode !== "zip" ? "goToAttachmentsStep" : "openAttachmentsTab";
+    !attachmentSourceAvailable && attachmentSourceSelectionRequired ? "goToAttachmentsStep" : "openAttachmentsTab";
 
   const readinessItems = [
     { key: "analysis-no-errors", label: "Pré-análise sem erros", ok: (summary?.errors ?? 0) === 0, critical: true },
@@ -3058,9 +3112,9 @@ export default function App() {
               </div>
 
               <div className="summaryGrid">
-            <article className={summary?.is_valid ? "summaryCard valid" : "summaryCard invalid"}>
+            <article className={readyToImport ? "summaryCard valid" : "summaryCard invalid"}>
               <h3>Status</h3>
-              <p>{summary?.is_valid ? "Apto para carga" : "Requer ajustes"}</p>
+              <p>{readyToImport ? "Apto para carga" : "Requer ajustes"}</p>
             </article>
             <article className="summaryCard">
               <h3>Erros</h3>
@@ -3321,6 +3375,35 @@ export default function App() {
                   </div>
                 )}
               </section>
+
+              {missingAttachmentGroups.length > 0 && (
+                <section className="attachmentsMissingPanel">
+                  <div className="sectionTitleRow">
+                    <h3>Contratos com arquivos faltantes</h3>
+                  </div>
+                  <p className="hint">
+                    Contratos com anexo ou CLID referenciado no CSV, mas sem o arquivo correspondente na pasta ou no
+                    pacote validado.
+                  </p>
+                  <div className="missingAttachmentList">
+                    {missingAttachmentGroups.map((group) => (
+                      <article className="missingAttachmentCard" key={group.key}>
+                        <h4>{group.contractId}</h4>
+                        {group.sourceFiles.length > 0 && (
+                          <p className="hint">Origem: {group.sourceFiles.join(", ")}</p>
+                        )}
+                        <ul className="checklist">
+                          {group.paths.map((path) => (
+                            <li key={`${group.key}-${path}`} className="criticalPending">
+                              {path}
+                            </li>
+                          ))}
+                        </ul>
+                      </article>
+                    ))}
+                  </div>
+                </section>
+              )}
 
               {attachmentFixSuggestions.length > 0 && (
                 <section className="attachmentsSuggestionsPanel">
