@@ -160,6 +160,10 @@ const ISSUE_GUIDANCE = {
   MISSING_FILE: "Inclua o arquivo CSV obrigatório no pacote base.",
   MISSING_COLUMN: "Ajuste o cabeçalho para conter todas as colunas esperadas.",
   REQUIRED_FIELD: "Preencha o campo obrigatório na linha indicada.",
+  INVALID_TITLE_SPECIAL_CHARACTERS:
+    "Remova acentos e símbolos do campo Title ou aplique a correção automática.",
+  ARIBA_UNSUPPORTED_MAX_DATE:
+    "Troque 9999-12-31 por 9999-01-01 em EffectiveDate ou ExpirationDate.",
   INVALID_ID_FORMAT: "Padronize o ContractId conforme a regra definida no cliente.",
   INVALID_DATE: "Use formato de data YYYY-MM-DD.",
   INVALID_NUMBER: "Use número com ponto decimal, sem texto.",
@@ -185,6 +189,8 @@ const ISSUE_GUIDANCE = {
 const AUTO_FIXABLE_CODES = new Set([
   "UNEXPECTED_FILE_PATH",
   "REQUIRED_FIELD",
+  "INVALID_TITLE_SPECIAL_CHARACTERS",
+  "ARIBA_UNSUPPORTED_MAX_DATE",
   "INVALID_PARTY_FORMAT",
   "INVALID_ID_FORMAT",
   "DUPLICATE_DOCUMENT",
@@ -196,6 +202,8 @@ const AUTO_FIXABLE_CODES = new Set([
 ]);
 
 const SESSION_STORAGE_KEY = "ariba_legacy_session_v2";
+const ARIBA_UNSUPPORTED_MAX_DATE = "9999-12-31";
+const ARIBA_SUPPORTED_MAX_DATE = "9999-01-01";
 
 const MANUAL_ROW_DEFAULTS = Object.freeze({
   ContractId: "",
@@ -452,6 +460,40 @@ function normalizeSapParty(value) {
   return raw;
 }
 
+function stripDiacritics(value) {
+  return String(value || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+}
+
+function hasInvalidContractTitleCharacters(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return false;
+  }
+  const normalized = stripDiacritics(raw);
+  return normalized !== raw || /[^A-Za-z0-9 ._()-]/.test(normalized);
+}
+
+function normalizeContractTitle(value, fallback = "") {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return String(fallback || "").trim();
+  }
+
+  const cleaned = stripDiacritics(raw)
+    .replace(/[^A-Za-z0-9 ._()-]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  return cleaned || String(fallback || "").trim() || raw;
+}
+
+function normalizeAribaMaxDate(value) {
+  const raw = String(value || "").trim();
+  return raw === ARIBA_UNSUPPORTED_MAX_DATE ? ARIBA_SUPPORTED_MAX_DATE : raw;
+}
+
 function dedupeRows(rows) {
   const seen = new Set();
   const normalizedRows = [];
@@ -490,9 +532,24 @@ function buildSafeAutoFixDataset(sourceDataset) {
     next.ParentAgreement = String(next.ParentAgreement || "").trim();
     next.Supplier = normalizeSapParty(next.Supplier);
     next.AffectedParties = normalizeSapParty(next.AffectedParties);
+    next.EffectiveDate = normalizeAribaMaxDate(next.EffectiveDate);
+    next.ExpirationDate = normalizeAribaMaxDate(next.ExpirationDate);
     if (next.ContractId && !next.Title) {
       next.Title = next.ContractId;
       changes.push(`Título preenchido com ContractId (${next.ContractId}).`);
+    }
+    if (String(row.EffectiveDate || "").trim() === ARIBA_UNSUPPORTED_MAX_DATE) {
+      changes.push(`EffectiveDate ajustado para ${ARIBA_SUPPORTED_MAX_DATE}.`);
+    }
+    if (String(row.ExpirationDate || "").trim() === ARIBA_UNSUPPORTED_MAX_DATE) {
+      changes.push(`ExpirationDate ajustado para ${ARIBA_SUPPORTED_MAX_DATE}.`);
+    }
+    if (next.Title && hasInvalidContractTitleCharacters(next.Title)) {
+      const normalizedTitle = normalizeContractTitle(next.Title, next.ContractId);
+      if (normalizedTitle && normalizedTitle !== next.Title) {
+        next.Title = normalizedTitle;
+        changes.push(`Title normalizado para ${normalizedTitle}.`);
+      }
     }
     if (originalId !== next.ContractId) {
       changes.push(`ContractId normalizado: ${originalId} -> ${next.ContractId}.`);
@@ -864,6 +921,35 @@ function buildIssueAutoFixDataset(sourceDataset, issue, allIssues = []) {
     }
   }
 
+  if (issue?.code === "INVALID_TITLE_SPECIAL_CHARACTERS" && sourceKey === "contracts") {
+    const rowsToUpdate = targetRow
+      ? [targetRow]
+      : (dataset.contracts || []).filter((row) => String(row.ContractId || "").trim() === targetContract);
+    for (const row of rowsToUpdate) {
+      const nextTitle = normalizeContractTitle(row.Title, row.ContractId);
+      if (nextTitle && nextTitle !== row.Title) {
+        row.Title = nextTitle;
+        changes.push(`Title normalizado para ${nextTitle}.`);
+      }
+    }
+  }
+
+  if (issue?.code === "ARIBA_UNSUPPORTED_MAX_DATE" && sourceKey === "contracts") {
+    const rowsToUpdate = targetRow
+      ? [targetRow]
+      : (dataset.contracts || []).filter((row) => String(row.ContractId || "").trim() === targetContract);
+    for (const row of rowsToUpdate) {
+      if (fieldName === "EffectiveDate" && String(row.EffectiveDate || "").trim() === ARIBA_UNSUPPORTED_MAX_DATE) {
+        row.EffectiveDate = ARIBA_SUPPORTED_MAX_DATE;
+        changes.push(`EffectiveDate ajustado para ${ARIBA_SUPPORTED_MAX_DATE}.`);
+      }
+      if (fieldName === "ExpirationDate" && String(row.ExpirationDate || "").trim() === ARIBA_UNSUPPORTED_MAX_DATE) {
+        row.ExpirationDate = ARIBA_SUPPORTED_MAX_DATE;
+        changes.push(`ExpirationDate ajustado para ${ARIBA_SUPPORTED_MAX_DATE}.`);
+      }
+    }
+  }
+
   if (issue?.code === "INVALID_PARTY_FORMAT" && sourceKey === "contracts") {
     const rowsToUpdate = targetRow
       ? [targetRow]
@@ -1110,30 +1196,36 @@ function getIssueAutoFixPriority(issue) {
   if (issue?.code === "REQUIRED_FIELD" && issue?.source_file === "Contracts.csv") {
     return 1;
   }
-  if (issue?.code === "REQUIRED_FIELD" && issue?.source_file === "ContractDocuments.csv") {
+  if (issue?.code === "INVALID_TITLE_SPECIAL_CHARACTERS") {
     return 2;
   }
-  if (issue?.code === "REQUIRED_FIELD" && issue?.source_file === "ContractTeams.csv") {
+  if (issue?.code === "ARIBA_UNSUPPORTED_MAX_DATE") {
     return 3;
   }
-  if (issue?.code === "REQUIRED_FIELD") {
+  if (issue?.code === "REQUIRED_FIELD" && issue?.source_file === "ContractDocuments.csv") {
     return 4;
   }
-  if (issue?.code === "UNEXPECTED_FILE_PATH" || issue?.code === "INVALID_PARTY_FORMAT") {
+  if (issue?.code === "REQUIRED_FIELD" && issue?.source_file === "ContractTeams.csv") {
     return 5;
+  }
+  if (issue?.code === "REQUIRED_FIELD") {
+    return 6;
+  }
+  if (issue?.code === "UNEXPECTED_FILE_PATH" || issue?.code === "INVALID_PARTY_FORMAT") {
+    return 7;
   }
   if (
     issue?.code === "DUPLICATE_DOCUMENT" ||
     issue?.code === "DUPLICATE_CONTENT_DOCUMENT" ||
     issue?.code === "DUPLICATE_TEAM_MEMBER"
   ) {
-    return 6;
+    return 8;
   }
   if (issue?.code === "IMPORT_PARAMS_ROW_COUNT") {
-    return 7;
+    return 9;
   }
   if (issue?.code === "DUPLICATE_ATTACHMENT_FILENAME" || issue?.code === "UNREFERENCED_ATTACHMENT") {
-    return 8;
+    return 10;
   }
   return 99;
 }

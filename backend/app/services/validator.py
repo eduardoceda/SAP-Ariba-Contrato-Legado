@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import unicodedata
 from collections import Counter, defaultdict
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
@@ -38,6 +39,9 @@ ALLOWED_CONTRACT_EXTENSIONS = {
     ".jpeg",
 }
 ALLOWED_CLID_EXTENSIONS = {".xls", ".xlsx", ".xlsm", ".csv"}
+CONTRACT_TITLE_ALLOWED_PATTERN = re.compile(r"^[A-Za-z0-9 ._()-]+$")
+ARIBA_UNSUPPORTED_DATE_VALUE = "9999-12-31"
+ARIBA_SUPPORTED_MAX_DATE_VALUE = "9999-01-01"
 
 
 def _date_is_valid(value: str) -> bool:
@@ -58,6 +62,30 @@ def _decimal_is_valid(value: str) -> bool:
         return True
     except (InvalidOperation, ValueError):
         return False
+
+
+def _strip_diacritics(value: str) -> str:
+    normalized = unicodedata.normalize("NFKD", value)
+    return "".join(char for char in normalized if not unicodedata.combining(char))
+
+
+def _normalize_contract_title(value: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+
+    normalized = _strip_diacritics(raw)
+    normalized = re.sub(r"[^A-Za-z0-9 ._()-]+", " ", normalized)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _contract_title_has_special_characters(value: str) -> bool:
+    raw = str(value or "").strip()
+    if not raw:
+        return False
+
+    normalized = _strip_diacritics(raw)
+    return normalized != raw or CONTRACT_TITLE_ALLOWED_PATTERN.fullmatch(normalized) is None
 
 
 def _path_exists(available_paths: set[str] | None, relative_path: str) -> bool:
@@ -387,6 +415,21 @@ def validate_dataset(
                     contract_id=contract_id or None,
                 )
 
+        title = row.get("Title", "")
+        if title and _contract_title_has_special_characters(title):
+            suggested_title = _normalize_contract_title(title) or contract_id
+            suggestion = f" Sugestão automática: {suggested_title}." if suggested_title and suggested_title != title else ""
+            add_issue(
+                "error",
+                "INVALID_TITLE_SPECIAL_CHARACTERS",
+                "Title contém caracteres especiais. Use apenas letras, números, espaço, ponto, hífen, sublinhado e parênteses."
+                + suggestion,
+                source_file="Contracts.csv",
+                row=index,
+                field="Title",
+                contract_id=contract_id or None,
+            )
+
         if contract_id and not contract_id_pattern.match(contract_id):
             add_issue(
                 "error",
@@ -464,6 +507,16 @@ def validate_dataset(
                     "error",
                     "INVALID_DATE",
                     f"Data inválida em {date_field}. Formato esperado: YYYY-MM-DD.",
+                    source_file="Contracts.csv",
+                    row=index,
+                    field=date_field,
+                    contract_id=contract_id or None,
+                )
+            if date_field in {"EffectiveDate", "ExpirationDate"} and value == ARIBA_UNSUPPORTED_DATE_VALUE:
+                add_issue(
+                    "error",
+                    "ARIBA_UNSUPPORTED_MAX_DATE",
+                    f"{date_field} com data {ARIBA_UNSUPPORTED_DATE_VALUE} não é importado pelo Ariba. Use {ARIBA_SUPPORTED_MAX_DATE_VALUE}.",
                     source_file="Contracts.csv",
                     row=index,
                     field=date_field,

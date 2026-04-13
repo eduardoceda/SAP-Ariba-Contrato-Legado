@@ -119,6 +119,8 @@ ISSUE_GUIDANCE = {
     "MISSING_FILE": "Inclua o arquivo CSV obrigatório no pacote base.",
     "MISSING_COLUMN": "Ajuste o cabeçalho para conter todas as colunas esperadas.",
     "REQUIRED_FIELD": "Preencha o campo obrigatório na linha indicada.",
+    "INVALID_TITLE_SPECIAL_CHARACTERS": "Remova acentos e símbolos do campo Title ou aplique a correção automática.",
+    "ARIBA_UNSUPPORTED_MAX_DATE": "Troque 9999-12-31 por 9999-01-01 em EffectiveDate ou ExpirationDate.",
     "INVALID_ID_FORMAT": "Padronize o ContractId conforme a regra definida no cliente.",
     "INVALID_DATE": "Use formato de data YYYY-MM-DD.",
     "INVALID_NUMBER": "Use número decimal válido, sem texto.",

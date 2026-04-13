@@ -6,12 +6,14 @@ from io import BytesIO
 from pathlib import Path
 from zipfile import ZIP_DEFLATED, ZipFile
 
+import pytest
 from fastapi.testclient import TestClient
 from openpyxl import Workbook, load_workbook
 
 from app.models import AribaDataset, ExecutiveSummary, ValidationIssue, ValidationReport, ValidationSummary
 from app.main import app
 from app.services.exporter import build_package_zip_with_attachments, build_report_xlsx
+from app.services.validator import validate_dataset
 import app.services.run_history as run_history
 
 SAMPLE_DIR = Path(__file__).resolve().parent / "fixtures" / "sample_zip"
@@ -340,6 +342,197 @@ def test_report_xlsx_includes_issue_guidance() -> None:
     assert issues_sheet["D2"].value == "Preencha o campo obrigatório na linha indicada."
     assert issues_sheet.freeze_panes == "A2"
     assert issues_sheet.auto_filter.ref is not None
+
+
+def test_validate_dataset_flags_special_characters_in_contract_title() -> None:
+    dataset = AribaDataset(
+        contracts=[
+            {
+                "Owner": "usuario.teste",
+                "Title": "Contrato São Paulo #1",
+                "ContractId": "LCW4700001278",
+                "BaseLanguage": "BrazilianPortuguese",
+                "Description": "",
+                "Supplier": "",
+                "AffectedParties": "",
+                "HierarchicalType": "MasterAgreement",
+                "ParentAgreement": "",
+                "ProposedAmount": "",
+                "Amount": "",
+                "Commodity": "",
+                "Region": "",
+                "Client": "",
+                "ExpirationTermType": "",
+                "AutoRenewalInterval": "",
+                "MaxAutoRenewalsAllowed": "",
+                "AgreementDate": "",
+                "EffectiveDate": "",
+                "ExpirationDate": "",
+                "NoticePeriod": "",
+                "NoticeEmailRecipients": "",
+                "ContractStatus": "Published",
+                "RelatedId": "",
+            }
+        ],
+        contract_teams=[
+            {
+                "Workspace": "LCW4700001278",
+                "ProjectGroup": "Comprador",
+                "Member": "usuario.teste",
+            }
+        ],
+        import_projects_parameters=[
+            {
+                "WorkspaceLookupKey": "ContractId",
+                "TemplateName": "Contrato - Legado",
+                "AttributesFileLocation": "Contracts.csv",
+                "DocumentsFileLocation": "ContractDocuments.csv",
+                "TeamsFileLocation": "ContractTeams.csv",
+                "ContractContentDocumentsFileLocation": "ContractContentDocuments.csv",
+                "RootParentId": "",
+                "TopFolderName": "",
+                "FolderFieldName": "ContractId",
+                "FolderFieldPattern": "([1-9][0-9]*)",
+                "FolderFormat": "{0} to {1}",
+            }
+        ],
+    )
+
+    report = validate_dataset(dataset=dataset)
+
+    issue = next((item for item in report.issues if item.code == "INVALID_TITLE_SPECIAL_CHARACTERS"), None)
+    assert issue is not None
+    assert issue.severity == "error"
+    assert issue.source_file == "Contracts.csv"
+    assert issue.row == 2
+    assert issue.field == "Title"
+    assert issue.contract_id == "LCW4700001278"
+
+
+@pytest.mark.parametrize("invalid_char", ["\\", "/", ":", "*", "?", '"', "<", ">", "|", "#", "+", "%", "&"])
+def test_validate_dataset_flags_forbidden_contract_title_characters(invalid_char: str) -> None:
+    dataset = AribaDataset(
+        contracts=[
+            {
+                "Owner": "usuario.teste",
+                "Title": f"Contrato{invalid_char}Sao Paulo 1",
+                "ContractId": "LCW4700001278",
+                "BaseLanguage": "BrazilianPortuguese",
+                "Description": "",
+                "Supplier": "",
+                "AffectedParties": "",
+                "HierarchicalType": "MasterAgreement",
+                "ParentAgreement": "",
+                "ProposedAmount": "",
+                "Amount": "",
+                "Commodity": "",
+                "Region": "",
+                "Client": "",
+                "ExpirationTermType": "",
+                "AutoRenewalInterval": "",
+                "MaxAutoRenewalsAllowed": "",
+                "AgreementDate": "",
+                "EffectiveDate": "",
+                "ExpirationDate": "",
+                "NoticePeriod": "",
+                "NoticeEmailRecipients": "",
+                "ContractStatus": "Published",
+                "RelatedId": "",
+            }
+        ],
+        contract_teams=[
+            {
+                "Workspace": "LCW4700001278",
+                "ProjectGroup": "Comprador",
+                "Member": "usuario.teste",
+            }
+        ],
+        import_projects_parameters=[
+            {
+                "WorkspaceLookupKey": "ContractId",
+                "TemplateName": "Contrato - Legado",
+                "AttributesFileLocation": "Contracts.csv",
+                "DocumentsFileLocation": "ContractDocuments.csv",
+                "TeamsFileLocation": "ContractTeams.csv",
+                "ContractContentDocumentsFileLocation": "ContractContentDocuments.csv",
+                "RootParentId": "",
+                "TopFolderName": "",
+                "FolderFieldName": "ContractId",
+                "FolderFieldPattern": "([1-9][0-9]*)",
+                "FolderFormat": "{0} to {1}",
+            }
+        ],
+    )
+
+    report = validate_dataset(dataset=dataset)
+
+    issue = next((item for item in report.issues if item.code == "INVALID_TITLE_SPECIAL_CHARACTERS"), None)
+    assert issue is not None, f"Expected invalid Title for character {invalid_char!r}"
+    assert issue.field == "Title"
+    assert issue.contract_id == "LCW4700001278"
+
+
+def test_validate_dataset_flags_ariba_unsupported_max_dates() -> None:
+    dataset = AribaDataset(
+        contracts=[
+            {
+                "Owner": "usuario.teste",
+                "Title": "Contrato Sao Paulo 1",
+                "ContractId": "LCW4700001278",
+                "BaseLanguage": "BrazilianPortuguese",
+                "Description": "",
+                "Supplier": "",
+                "AffectedParties": "",
+                "HierarchicalType": "MasterAgreement",
+                "ParentAgreement": "",
+                "ProposedAmount": "",
+                "Amount": "",
+                "Commodity": "",
+                "Region": "",
+                "Client": "",
+                "ExpirationTermType": "",
+                "AutoRenewalInterval": "",
+                "MaxAutoRenewalsAllowed": "",
+                "AgreementDate": "",
+                "EffectiveDate": "9999-12-31",
+                "ExpirationDate": "9999-12-31",
+                "NoticePeriod": "",
+                "NoticeEmailRecipients": "",
+                "ContractStatus": "Published",
+                "RelatedId": "",
+            }
+        ],
+        contract_teams=[
+            {
+                "Workspace": "LCW4700001278",
+                "ProjectGroup": "Comprador",
+                "Member": "usuario.teste",
+            }
+        ],
+        import_projects_parameters=[
+            {
+                "WorkspaceLookupKey": "ContractId",
+                "TemplateName": "Contrato - Legado",
+                "AttributesFileLocation": "Contracts.csv",
+                "DocumentsFileLocation": "ContractDocuments.csv",
+                "TeamsFileLocation": "ContractTeams.csv",
+                "ContractContentDocumentsFileLocation": "ContractContentDocuments.csv",
+                "RootParentId": "",
+                "TopFolderName": "",
+                "FolderFieldName": "ContractId",
+                "FolderFieldPattern": "([1-9][0-9]*)",
+                "FolderFormat": "{0} to {1}",
+            }
+        ],
+    )
+
+    report = validate_dataset(dataset=dataset)
+
+    issues = [item for item in report.issues if item.code == "ARIBA_UNSUPPORTED_MAX_DATE"]
+    assert len(issues) == 2
+    assert {item.field for item in issues} == {"EffectiveDate", "ExpirationDate"}
+    assert all(item.severity == "error" for item in issues)
+    assert all(item.source_file == "Contracts.csv" for item in issues)
 
 
 def test_export_package_with_attachments_normalizes_clid_layout() -> None:
