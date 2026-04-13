@@ -1291,6 +1291,7 @@ export default function App() {
   const [validationRules, setValidationRules] = useState(DEFAULT_RULES);
   const [importParameters, setImportParameters] = useState(DEFAULT_IMPORT_PARAMETERS);
   const [severityFilter, setSeverityFilter] = useState("all");
+  const [messageTypeFilter, setMessageTypeFilter] = useState("all");
   const [contractFilter, setContractFilter] = useState("");
   const [previewFileKey, setPreviewFileKey] = useState("contracts");
   const [showOnlyCriticalPending, setShowOnlyCriticalPending] = useState(true);
@@ -1432,6 +1433,9 @@ export default function App() {
       if (typeof payload.severityFilter === "string") {
         setSeverityFilter(payload.severityFilter);
       }
+      if (typeof payload.messageTypeFilter === "string") {
+        setMessageTypeFilter(payload.messageTypeFilter);
+      }
       if (typeof payload.contractFilter === "string") {
         setContractFilter(payload.contractFilter);
       }
@@ -1487,6 +1491,7 @@ export default function App() {
       validationRules,
       importParameters,
       severityFilter,
+      messageTypeFilter,
       contractFilter,
       showOnlyCriticalPending,
       profileNameInput,
@@ -1511,6 +1516,7 @@ export default function App() {
     validationRules,
     importParameters,
     severityFilter,
+    messageTypeFilter,
     contractFilter,
     showOnlyCriticalPending,
     profileNameInput,
@@ -1560,13 +1566,41 @@ export default function App() {
     [issues]
   );
 
+  const issueTypeOptions = useMemo(() => {
+    const counts = new Map();
+    issues.forEach((item) => {
+      const code = String(item.code || "").trim();
+      if (!code) {
+        return;
+      }
+      counts.set(code, (counts.get(code) || 0) + 1);
+    });
+
+    return Array.from(counts.entries())
+      .sort(([left], [right]) => left.localeCompare(right, "pt-BR"))
+      .map(([code, count]) => ({
+        value: code,
+        label: `${code} (${count})`,
+      }));
+  }, [issues]);
+
+  useEffect(() => {
+    if (messageTypeFilter === "all") {
+      return;
+    }
+    if (!issueTypeOptions.some((option) => option.value === messageTypeFilter)) {
+      setMessageTypeFilter("all");
+    }
+  }, [messageTypeFilter, issueTypeOptions]);
+
   const filteredIssues = useMemo(() => {
     const contractTerm = contractFilter.trim().toLowerCase();
     const nextIssues = issues.filter((item) => {
       const severityMatches = severityFilter === "all" ? true : item.severity === severityFilter;
+      const messageTypeMatches = messageTypeFilter === "all" ? true : item.code === messageTypeFilter;
       const contractMatches =
         !contractTerm || (item.contract_id || "").toLowerCase().includes(contractTerm);
-      return severityMatches && contractMatches;
+      return severityMatches && messageTypeMatches && contractMatches;
     });
     nextIssues.sort((left, right) => {
       const lineDiff = getIssueLineNumber(left) - getIssueLineNumber(right);
@@ -1584,7 +1618,7 @@ export default function App() {
       return String(left.code || "").localeCompare(String(right.code || ""), "pt-BR");
     });
     return nextIssues;
-  }, [issues, severityFilter, contractFilter]);
+  }, [issues, severityFilter, messageTypeFilter, contractFilter]);
 
   const attachmentFixSuggestions = useMemo(() => {
     if (!analysis?.dataset) {
@@ -3070,7 +3104,13 @@ export default function App() {
           {reviewTab === "issues" && (
             <>
               <div className="issuesHeader">
-                <h3>Inconsistências ({issues.length})</h3>
+                <h3>
+                  Inconsistências (
+                  {severityFilter !== "all" || messageTypeFilter !== "all" || contractFilter.trim()
+                    ? `${filteredIssues.length} de ${issues.length}`
+                    : issues.length}
+                  )
+                </h3>
                 <p>
                   {groupedIssues.error.length} erros | {groupedIssues.warning.length} avisos |{" "}
                   {groupedIssues.info.length} informativos
@@ -3126,6 +3166,17 @@ export default function App() {
                     <option value="error">Erro</option>
                     <option value="warning">Aviso</option>
                     <option value="info">Informativo</option>
+                  </select>
+                </label>
+                <label>
+                  Tipo de mensagem
+                  <select value={messageTypeFilter} onChange={(event) => setMessageTypeFilter(event.target.value)}>
+                    <option value="all">Todos</option>
+                    {issueTypeOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
                   </select>
                 </label>
                 <label>
